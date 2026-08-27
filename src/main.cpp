@@ -1759,18 +1759,13 @@ int drawPngLine(PNGDRAW* pDraw) {
 
   uint8_t* p = (uint8_t*)pDraw->pPixels;
   float world_y = (float)(curDecodingTy * 256 + ty);
-  float d_world_y = world_y - curDecodingCenterY;
-  int sy = (int)roundf(120.0f + d_world_y * curDecodingScale);
-  if (sy < 0 || sy >= TFT_H) return 1;
-
-  int chunkIdx = sy / 60;
-  int rowInChunk = sy % 60;
-  uint8_t* chunkPtr = curGridChunks[chunkIdx];
-  if (!chunkPtr) return 1;
-  uint8_t* rowDst = chunkPtr + rowInChunk * TFT_W;
-
-  float dY_px = (float)sy - 120.0f;
-  float dY_sq = dY_px * dY_px;
+  float d_world_y0 = world_y - 0.5f - curDecodingCenterY;
+  float d_world_y1 = world_y + 0.5f - curDecodingCenterY;
+  int sy_min = (int)floorf(120.0f + d_world_y0 * curDecodingScale);
+  int sy_max = (int)ceilf(120.0f + d_world_y1 * curDecodingScale);
+  if (sy_min < 0) sy_min = 0;
+  if (sy_max >= TFT_H) sy_max = TFT_H - 1;
+  if (sy_min > sy_max) return 1;
 
   for (int x = 0; x < RADAR_TILE_SIZE; x++) {
     uint8_t a = 0;
@@ -1800,18 +1795,35 @@ int drawPngLine(PNGDRAW* pDraw) {
     if (a < 15) continue; // No precipitation
 
     float world_x = (float)(curDecodingTx * 256 + x);
-    float d_world_x = world_x - curDecodingCenterX;
-    int sx = (int)roundf(120.0f + d_world_x * curDecodingScale);
-    if (sx < 0 || sx >= TFT_W) continue;
-
-    float dX_px = (float)sx - 120.0f;
-    if (dX_px * dX_px + dY_sq > 14400.0f) continue; // Outside round screen
+    float d_world_x0 = world_x - 0.5f - curDecodingCenterX;
+    float d_world_x1 = world_x + 0.5f - curDecodingCenterX;
+    int sx_min = (int)floorf(120.0f + d_world_x0 * curDecodingScale);
+    int sx_max = (int)ceilf(120.0f + d_world_x1 * curDecodingScale);
+    if (sx_min < 0) sx_min = 0;
+    if (sx_max >= TFT_W) sx_max = TFT_W - 1;
+    if (sx_min > sx_max) continue;
 
     // Convert to 8-bit RGB332
     uint8_t col8 = (uint8_t)(((r & 0xE0)) | ((g & 0xE0) >> 3) | ((b & 0xC0) >> 6));
     if (col8 == 0x00) col8 = 0x04;
 
-    rowDst[sx] = col8;
+    for (int sy = sy_min; sy <= sy_max; sy++) {
+      int chunkIdx = sy / 60;
+      int rowInChunk = sy % 60;
+      uint8_t* chunkPtr = curGridChunks[chunkIdx];
+      if (!chunkPtr) continue;
+      uint8_t* rowDst = chunkPtr + rowInChunk * TFT_W;
+
+      float dY_px = (float)sy - 120.0f;
+      float dY_sq = dY_px * dY_px;
+
+      for (int sx = sx_min; sx <= sx_max; sx++) {
+        float dX_px = (float)sx - 120.0f;
+        if (dX_px * dX_px + dY_sq <= 14400.0f) {
+          rowDst[sx] = col8;
+        }
+      }
+    }
   }
   return 1;
 }
