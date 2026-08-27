@@ -10,50 +10,69 @@
 </p>
 
 <p align="center">
-  <b>A universal, worldwide desktop radar for the 1.28″ GC9A01 round LCD display combining global precipitation weather radar (RainViewer API) and live aircraft tracking (ADS-B) with tactical threat sector beam, wind vector analysis, embedded web dashboard, and flicker-free animation.</b>
+  <b>A universal, worldwide tactical radar station for the 1.28″ GC9A01 round LCD display combining global precipitation weather radar (RainViewer API) and live aircraft tracking (ADS-B) with tactical threat sector beam, wind vector analysis, embedded web dashboard, and flicker-free animation.</b>
+</p>
+
+---
+
+## 📸 Live Previews
+
+<p align="center">
+  <img src="data/combined_radar_live.jpg" width="31%" alt="Combined Radar">
+  <img src="data/weather_radar_live.jpg" width="31%" alt="Weather Radar">
+  <img src="data/plane_radar_live.jpg" width="31%" alt="Aircraft Radar">
+</p>
+<p align="center">
+  <img src="data/web_dashboard.png" width="95%" alt="Web Dashboard">
 </p>
 
 ---
 
 ## 🌟 Project Overview
 
-This open-source DIY project transforms an ultra-compact **ESP32-C3 SuperMini** board and a round **1.28″ GC9A01 TFT display (240×240 px)** into a worldwide tactical radar station. It operates on **any GPS coordinates on Earth** (Europe, Americas, Asia, Africa, Australia).
+**ESP-GlobalRadar** transforms an ultra-compact **ESP32-C3 SuperMini** board and a round **1.28″ GC9A01 TFT display (240×240 px)** into a worldwide tactical radar station. It operates on **any GPS coordinates on Earth** (Europe, Americas, Asia, Africa, Australia).
 
-The device alternates or switches between three primary modes via automatic carousel or button clicks:
-1. **🌍 Global Weather Radar (RainViewer):** Downloads and decodes worldwide precipitation tiles (Web Mercator Slippy Map $256 \times 256\text{ px}$) rendered over real-time international border vector maps.
-2. **✈️ Global ADS-B Aircraft Tracker:** Tracks surrounding flights in real time with continuous position extrapolation (`Dead Reckoning`), airport route lookup (**FROM > TO**), and priority emergency isolation (**Squawk 7700 / 7600 / 7500**).
-3. **🛰️ Tactical ATC Combined Radar:** Displays both precipitation clouds and aircraft simultaneously on a single unified tactical screen.
+The device alternates or switches between three primary operational modes via automatic carousel or hardware button clicks:
+1. **🛰️ Tactical ATC Combined Radar:** Displays both precipitation clouds and aircraft simultaneously on a single unified tactical screen.
+2. **🌍 Global Weather Radar (RainViewer):** Downloads and decodes worldwide precipitation tiles (Web Mercator Slippy Map $256 \times 256\text{ px}$) rendered over real-time international border and coastline vector maps.
+3. **✈️ Global ADS-B Aircraft Tracker:** Tracks surrounding flights in real time with continuous position extrapolation (`Dead Reckoning`), airport route lookup (**FROM > TO**), and priority emergency isolation (**Squawk 7700 / 7600 / 7500**).
 
 ---
 
 ## 🚀 Key Features
 
-* 🌍 **Worldwide Weather Coverage (RainViewer Global API):**
-  - Web Mercator Slippy Map tile projection for any GPS coordinates on the globe.
-  - High-speed streaming decompressor with memory-optimized 4-chunk RAM buffering.
-  - Vector world border polygons ([include/world_borders.h](include/world_borders.h)) rendered in real time.
+* 🌍 **Worldwide Weather Coverage (RainViewer Global HTTPS API):**
+  - Web Mercator Slippy Map multi-tile download ($2\times 2$ tile coverage) for any coordinate on Earth.
+  - Seamless box interpolation for gap-free precipitation rendering at all zoom levels ($10\text{ km} \dots 250\text{ km}$).
+  - Two-stage chunked memory manager avoiding heap fragmentation under TLS.
+* 🗺️ **Complete Global Coastlines & Country Boundaries:**
+  - Real-time vector rendering of international land borders and ocean coastlines (1,917 segments, 20,520 coordinates from Natural Earth 50m dataset).
+  - Detailed coastlines worldwide including the UK Channel, Mediterranean, Scandinavia, islands, and continents.
+* 📍 **Curated Regional Cities Database & Custom Home Pin:**
+  - 348 regional centers, capitals, and airport hubs in Flash memory.
+  - Dynamic user location tag centered on your exact town or custom label (e.g. `Brighton`, `Sliač`, `London`).
 * 🧭 **Tactical Threat Sector Beam & Wind Vector Tracking (Open-Meteo 700 hPa):**
   - **Red Pulsating Beam (INCOMING):** Targets incoming storms within the upper-level wind inflow cone ($\pm 60^\circ$ upwind) with alerts such as `! INCOMING: 8.5 km SW !`.
   - **Yellow Tactical Beam (STORM):** Alerts to precipitation within the immediate proximity circle with text `! STORM: 8.5 km SW !`.
   - **Visual Elements:** $36^\circ$ tactical beam, range arc matching the cloud's distance, laser tracer, target reticle, and outer directional chevron ($\blacktriangledown$).
-  - **Blazing Fast SPIFFS Raw Cache:** Decompression occurs once per new radar frame, enabling smooth 20 FPS pulsing animations.
 * 🚨 **Exclusive Emergency Flight Focus (Emergency Isolation):**
   - When an aircraft signals an emergency (**Squawk 7700 / 7600 / 7500** or discrete ADS-B flag), **all non-emergency aircraft are instantly hidden**.
   - Only the emergency flight is displayed with a flashing warning outline, persistent HUD tag, and top alert banner `⚠️ EMERGENCY: CALLSIGN (SQ7700)`.
-  - Once the emergency clears or leaves the range, normal traffic display resumes automatically.
-* 🛡️ **Zero-Flicker Double Buffering & TLS Isolation:**
-  - 100% flicker-free smooth aircraft motion (1 Hz `Dead Reckoning`) with zero display tearing.
-* 🏷️ **HUD Contrast Boxes & Route Lookup:**
-  - Translucent rounded boxes ensure 100% legibility over colorful radar storm cores.
-  - Automatic callsign-to-airport-route translation (e.g. `VIE>AMS`, `JFK>LHR`, `HND>ITM`) with local RAM cache.
+* 🛡️ **Dynamic Aircraft Tag Limiter & Contrast HUD:**
+  - Dynamic HUD tag quota prevents display clutter on wide zooms while keeping military and emergency flights prioritized.
+  - Translucent rounded contrast boxes ensure 100% legibility over colorful radar storm cores.
+  - Automatic callsign-to-airport-route translation (e.g. `VIE>AMS`, `JFK>LHR`, `HND>ITM`).
+* ⚡ **Mode-Dependent Power & CPU Throttling:**
+  - In *Weather Radar Only* mode, ADS-B network polling is paused, saving power and optimizing responsiveness.
+  - When switching modes, aircraft data fetches immediately.
 * 🌅 **Astronomical Night Mode (Auto-Dimming):**
   - Automatic sunset/sunrise calculation from GPS coordinates and day of year with automatic backlight dimming.
 * 🔘 **Multi-Click Hardware Button (GPIO9):**
   - **Single Click:** Cycle scale ($10 \rightarrow 25 \rightarrow 50 \rightarrow 100 \rightarrow 250\text{ km}$).
   - **Double Click:** Switch mode (Combined $\rightarrow$ Weather Only $\rightarrow$ Aircraft Only).
   - **Long Press (3s):** Factory reset WiFi and NVS memory.
-* 🌐 **Embedded Web Dashboard (Port 80):**
-  - Interactive Leaflet.js map with live aircraft, hardware telemetry, browser GPS location setting, and 1-click OTA firmware updates directly from GitHub.
+* 🌐 **Embedded Web Dashboard (`http://espglobalradar.local`):**
+  - Interactive Leaflet.js map with live aircraft, hardware telemetry, city search, browser GPS location setting, and 1-click OTA firmware updates directly from GitHub.
 
 ---
 
