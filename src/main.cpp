@@ -3275,7 +3275,9 @@ void setup() {
 
   fetchWindData();
   downloadLatestRadar();
-  fetchPlanesData();
+  if (currentMode != MODE_WEATHER) {
+    fetchPlanesData();
+  }
   renderScreen();
   
   lastWeatherUpdateMs = millis();
@@ -3326,10 +3328,12 @@ void loop() {
     }
   }
 
-  // Periodic aircraft fetches (every 30s)
-  if (now - lastPlaneFetchMs >= PLANE_FETCH_INTERVAL_MS) {
-    lastPlaneFetchMs = now;
-    fetchPlanesData();
+  // Periodic aircraft fetches (only in Combined or Planes mode)
+  if (currentMode == MODE_COMBINED || currentMode == MODE_PLANES) {
+    if (now - lastPlaneFetchMs >= PLANE_FETCH_INTERVAL_MS) {
+      lastPlaneFetchMs = now;
+      fetchPlanesData();
+    }
   }
 
   // Fast plane position redraw (1 FPS)
