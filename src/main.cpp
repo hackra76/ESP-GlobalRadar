@@ -373,9 +373,10 @@ void setZoomIndex(int newIndex) {
   prefs.putFloat("radius", currentRadiusKm);
   prefs.end();
 
+  releaseCanvas();
+
   if (SPIFFS.exists(RADAR_FILE)) {
     decodeRadarImage();
-    renderScreen();
   }
 
   if (currentMode == MODE_WEATHER || currentMode == MODE_COMBINED) {
@@ -1707,6 +1708,7 @@ void handleApiOtaUploadDone() {
 }
 
 void setupWebServer() {
+  MDNS.end();
   if (MDNS.begin("espglobalradar")) {
     MDNS.addService("http", "tcp", 80);
     Serial.println("[mDNS] Responder started: http://espglobalradar.local");
@@ -1833,14 +1835,19 @@ bool downloadLatestRadar() {
         }
         if (f) {
           httpImg.writeToStream(&f);
-          size_t sz = f.size();
+          f.flush();
+          size_t sz = f.position();
           f.close();
-          prefs.begin("radar", false);
-          prefs.putUInt("last_ts", radarTimestamp);
-          prefs.putString("last_path", radarPath);
-          prefs.end();
-          Serial.printf("[RADAR] Tile saved to SPIFFS (%u B)!\n", (unsigned int)sz);
-          dlSuccess = true;
+          if (sz > 0) {
+            prefs.begin("radar", false);
+            prefs.putUInt("last_ts", radarTimestamp);
+            prefs.putString("last_path", radarPath);
+            prefs.end();
+            Serial.printf("[RADAR] Tile saved to SPIFFS (%u B)!\n", (unsigned int)sz);
+            dlSuccess = true;
+          } else {
+            Serial.println("[RADAR] Warning: Downloaded tile size is 0 bytes!");
+          }
         }
       } else {
         Serial.printf("[RADAR] HTTP tile download error: %d\n", imgCode);
@@ -1867,7 +1874,8 @@ void fetchWindData() {
 
   WiFiClient client;
   HTTPClient http;
-  http.setTimeout(4000);
+  http.setTimeout(5000);
+  http.setUserAgent("ESP-GlobalRadar/2.0");
 
   char url[220];
   snprintf(url, sizeof(url), "http://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current=wind_speed_10m,wind_direction_10m&hourly=wind_speed_700hPa,wind_direction_700hPa&forecast_hours=1", centerLat, centerLon);
@@ -1875,14 +1883,9 @@ void fetchWindData() {
   if (http.begin(client, url)) {
     int code = http.GET();
     if (code == HTTP_CODE_OK) {
-      JsonDocument filter;
-      filter["hourly"]["wind_direction_700hPa"][0] = true;
-      filter["hourly"]["wind_speed_700hPa"][0] = true;
-      filter["current"]["wind_direction_10m"] = true;
-      filter["current"]["wind_speed_10m"] = true;
-
+      String payload = http.getString();
       JsonDocument doc;
-      DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+      DeserializationError err = deserializeJson(doc, payload);
       if (!err) {
         if (doc["hourly"]["wind_direction_700hPa"].is<JsonArray>() && doc["hourly"]["wind_direction_700hPa"].size() > 0) {
           windDir700hPa = doc["hourly"]["wind_direction_700hPa"][0] | -1.0f;
@@ -2267,152 +2270,162 @@ void fetchPlanesData() {
   float fetchRadiusKm = currentRadiusKm;
   if (fetchRadiusKm >= 250.0f) fetchRadiusKm = 200.0f;
   float radiusNm = fetchRadiusKm / 1.852f;
-  String url = "https://opendata.adsb.fi/api/v3/lat/" + String(centerLat, 4) + "/lon/" + String(centerLon, 4) + "/dist/" + String(radiusNm, 1);
+
+  String urls[2] = {
+    "https://opendata.adsb.fi/api/v3/lat/" + String(centerLat, 4) + "/lon/" + String(centerLon, 4) + "/dist/" + String(radiusNm, 1),
+    "https://api.adsb.lol/v2/point/" + String(centerLat, 4) + "/" + String(centerLon, 4) + "/" + String(radiusNm, 1)
+  };
 
   Serial.printf("[ADS-B] Fetching aircraft (HTTPS, center: %.4f, %.4f, radius: %.0f km)...\n", centerLat, centerLon, currentRadiusKm);
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setHandshakeTimeout(12000);
+  bool parseSuccess = false;
 
-  HTTPClient http;
-  http.setTimeout(20000);
+  for (int attempt = 0; attempt < 2 && !parseSuccess; attempt++) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setHandshakeTimeout(10000);
 
-  if (http.begin(client, url)) {
-    int httpCode = http.GET();
-    if (httpCode == HTTP_CODE_OK) {
-      JsonDocument filter;
-      filter["ac"][0]["lat"] = true;
-      filter["ac"][0]["lon"] = true;
-      filter["ac"][0]["track"] = true;
-      filter["ac"][0]["true_heading"] = true;
-      filter["ac"][0]["gs"] = true;
-      filter["ac"][0]["flight"] = true;
-      filter["ac"][0]["t"] = true;
-      filter["ac"][0]["alt_baro"] = true;
-      filter["ac"][0]["baro_rate"] = true;
-      filter["ac"][0]["dbFlags"] = true;
-      filter["ac"][0]["squawk"] = true;
-      filter["ac"][0]["emergency"] = true;
+    HTTPClient http;
+    http.setTimeout(18000);
+    http.setUserAgent("ESP-GlobalRadar/2.0 (ESP32-C3; OpenADS-B)");
 
-      JsonDocument doc;
-      BufferedStream bStream(http.getStreamPtr(), 10000);
-      DeserializationError err = deserializeJson(doc, bStream, DeserializationOption::Filter(filter));
-      
-      http.end();
-      client.stop();
+    if (http.begin(client, urls[attempt])) {
+      int httpCode = http.GET();
+      if (httpCode == HTTP_CODE_OK) {
+        JsonDocument filter;
+        filter["ac"][0]["lat"] = true;
+        filter["ac"][0]["lon"] = true;
+        filter["ac"][0]["track"] = true;
+        filter["ac"][0]["true_heading"] = true;
+        filter["ac"][0]["gs"] = true;
+        filter["ac"][0]["flight"] = true;
+        filter["ac"][0]["t"] = true;
+        filter["ac"][0]["alt_baro"] = true;
+        filter["ac"][0]["baro_rate"] = true;
+        filter["ac"][0]["dbFlags"] = true;
+        filter["ac"][0]["squawk"] = true;
+        filter["ac"][0]["emergency"] = true;
 
-      if (err) {
-        Serial.printf("[ADS-B] JSON parse error: %s\n", err.c_str());
-      } else {
-        JsonArray acList = doc["ac"].as<JsonArray>();
+        JsonDocument doc;
+        BufferedStream bStream(http.getStreamPtr(), 10000);
+        DeserializationError err = deserializeJson(doc, bStream, DeserializationOption::Filter(filter));
+        
+        http.end();
+        client.stop();
 
-        struct Cand {
-          float distKm;
-          uint16_t idx;
-          uint8_t prio;
-        };
+        if (err) {
+          Serial.printf("[ADS-B] JSON parse error (src %d): %s\n", attempt, err.c_str());
+        } else {
+          JsonArray acList = doc["ac"].as<JsonArray>();
 
-        Cand cands[64];
-        size_t candCount = 0;
-        float cosCenterLat = cosf(centerLat * DEG_TO_RAD);
+          struct Cand {
+            float distKm;
+            uint16_t idx;
+            uint8_t prio;
+          };
 
-        for (size_t i = 0; i < acList.size() && candCount < 64; i++) {
-          JsonObject plane = acList[i];
-          float lat = plane["lat"].as<float>();
-          float lon = plane["lon"].as<float>();
-          if (lat == 0.0f && lon == 0.0f) continue;
+          Cand cands[64];
+          size_t candCount = 0;
+          float cosCenterLat = cosf(centerLat * DEG_TO_RAD);
 
-          bool isGround = (plane["alt_baro"].is<const char*>() && strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0);
-          if (currentRadiusKm >= 100.0f && isGround) continue;
+          for (size_t i = 0; i < acList.size() && candCount < 64; i++) {
+            JsonObject plane = acList[i];
+            float lat = plane["lat"].as<float>();
+            float lon = plane["lon"].as<float>();
+            if (lat == 0.0f && lon == 0.0f) continue;
 
-          int dbFlags = plane["dbFlags"] | 0;
-          bool is_mil = (dbFlags & 1) != 0;
-          const char* sq = plane["squawk"] | "";
-          const char* emg = plane["emergency"] | "";
-          bool is_emg = (strcmp(sq, "7700") == 0 || strcmp(sq, "7600") == 0 || strcmp(sq, "7500") == 0 ||
-                         (emg[0] != '\0' && strcmp(emg, "none") != 0));
+            bool isGround = (plane["alt_baro"].is<const char*>() && strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0);
+            if (currentRadiusKm >= 100.0f && isGround) continue;
 
-          float dLatKm = (lat - centerLat) * 111.32f;
-          float dLonKm = (lon - centerLon) * (111.32f * cosCenterLat);
-          float distKm = sqrtf(dLatKm * dLatKm + dLonKm * dLonKm);
+            int dbFlags = plane["dbFlags"] | 0;
+            bool is_mil = (dbFlags & 1) != 0;
+            const char* sq = plane["squawk"] | "";
+            const char* emg = plane["emergency"] | "";
+            bool is_emg = (strcmp(sq, "7700") == 0 || strcmp(sq, "7600") == 0 || strcmp(sq, "7500") == 0 ||
+                           (emg[0] != '\0' && strcmp(emg, "none") != 0));
 
-          uint8_t prio = is_emg ? 0 : (is_mil ? 1 : 2);
-          cands[candCount++] = {distKm, (uint16_t)i, prio};
-        }
+            float dLatKm = (lat - centerLat) * 111.32f;
+            float dLonKm = (lon - centerLon) * (111.32f * cosCenterLat);
+            float distKm = sqrtf(dLatKm * dLatKm + dLonKm * dLonKm);
 
-        std::sort(cands, cands + candCount, [](const Cand& a, const Cand& b) {
-          if (a.prio != b.prio) return a.prio < b.prio;
-          return a.distKm < b.distKm;
-        });
-
-        size_t count = 0;
-        for (size_t k = 0; k < candCount && count < MAX_AIRCRAFT; k++) {
-          JsonObject plane = acList[cands[k].idx];
-          AircraftData& ac = aircraftList[count++];
-
-          ac.lat = plane["lat"].as<float>();
-          ac.lon = plane["lon"].as<float>();
-          ac.track = plane["track"] | 0.0f;
-          ac.nose_deg = plane["true_heading"] | ac.track;
-          ac.gs_knots = plane["gs"] | 0.0f;
-          ac.vrate_fpm = plane["baro_rate"] | 0.0f;
-
-          int dbFlags = plane["dbFlags"] | 0;
-          ac.is_mil = (dbFlags & 1) != 0;
-
-          const char* sq = plane["squawk"] | "";
-          strlcpy(ac.squawk, sq, sizeof(ac.squawk));
-          const char* emg = plane["emergency"] | "";
-          ac.is_emergency = (strcmp(ac.squawk, "7700") == 0 || strcmp(ac.squawk, "7600") == 0 || strcmp(ac.squawk, "7500") == 0 ||
-                             (emg[0] != '\0' && strcmp(emg, "none") != 0));
-
-          const char* fl = plane["flight"] | "";
-          strlcpy(ac.callsign, fl, sizeof(ac.callsign));
-          size_t csLen = strlen(ac.callsign);
-          while (csLen > 0 && ac.callsign[csLen - 1] == ' ') {
-            ac.callsign[--csLen] = '\0';
-          }
-          if (ac.callsign[0] == '\0') strlcpy(ac.callsign, "NOCALL", sizeof(ac.callsign));
-
-          const char* typeStr = plane["t"] | "";
-          strlcpy(ac.type, typeStr, sizeof(ac.type));
-
-          if (plane["alt_baro"].is<const char*>() && strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0) {
-            strlcpy(ac.alt, "GND", sizeof(ac.alt));
-          } else {
-            float altFeet = plane["alt_baro"] | 0.0f;
-            int altMeters = (int)(altFeet * 0.3048f);
-            snprintf(ac.alt, sizeof(ac.alt), "%dm", altMeters);
+            uint8_t prio = is_emg ? 0 : (is_mil ? 1 : 2);
+            cands[candCount++] = {distKm, (uint16_t)i, prio};
           }
 
-          ac.route[0] = '\0';
-          if (strcmp(ac.callsign, "NOCALL") != 0 && !ac.is_mil) {
-            const char* cached = routeCacheFind(ac.callsign);
-            if (cached != nullptr) {
-              strlcpy(ac.route, cached, sizeof(ac.route));
+          std::sort(cands, cands + candCount, [](const Cand& a, const Cand& b) {
+            if (a.prio != b.prio) return a.prio < b.prio;
+            return a.distKm < b.distKm;
+          });
+
+          size_t count = 0;
+          for (size_t k = 0; k < candCount && count < MAX_AIRCRAFT; k++) {
+            JsonObject plane = acList[cands[k].idx];
+            AircraftData& ac = aircraftList[count++];
+
+            ac.lat = plane["lat"].as<float>();
+            ac.lon = plane["lon"].as<float>();
+            ac.track = plane["track"] | 0.0f;
+            ac.nose_deg = plane["true_heading"] | ac.track;
+            ac.gs_knots = plane["gs"] | 0.0f;
+            ac.vrate_fpm = plane["baro_rate"] | 0.0f;
+
+            int dbFlags = plane["dbFlags"] | 0;
+            ac.is_mil = (dbFlags & 1) != 0;
+
+            const char* sq = plane["squawk"] | "";
+            strlcpy(ac.squawk, sq, sizeof(ac.squawk));
+            const char* emg = plane["emergency"] | "";
+            ac.is_emergency = (strcmp(ac.squawk, "7700") == 0 || strcmp(ac.squawk, "7600") == 0 || strcmp(ac.squawk, "7500") == 0 ||
+                               (emg[0] != '\0' && strcmp(emg, "none") != 0));
+
+            const char* fl = plane["flight"] | "";
+            strlcpy(ac.callsign, fl, sizeof(ac.callsign));
+            size_t csLen = strlen(ac.callsign);
+            while (csLen > 0 && ac.callsign[csLen - 1] == ' ') {
+              ac.callsign[--csLen] = '\0';
+            }
+            if (ac.callsign[0] == '\0') strlcpy(ac.callsign, "NOCALL", sizeof(ac.callsign));
+
+            const char* typeStr = plane["t"] | "";
+            strlcpy(ac.type, typeStr, sizeof(ac.type));
+
+            if (plane["alt_baro"].is<const char*>() && strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0) {
+              strlcpy(ac.alt, "GND", sizeof(ac.alt));
+            } else {
+              float altFeet = plane["alt_baro"] | 0.0f;
+              int altMeters = (int)(altFeet * 0.3048f);
+              snprintf(ac.alt, sizeof(ac.alt), "%dm", altMeters);
+            }
+
+            ac.route[0] = '\0';
+            if (strcmp(ac.callsign, "NOCALL") != 0 && !ac.is_mil) {
+              const char* cached = routeCacheFind(ac.callsign);
+              if (cached != nullptr) {
+                strlcpy(ac.route, cached, sizeof(ac.route));
+              }
             }
           }
-        }
 
-        aircraftCount = count;
-        lastPlaneFetchFixMs = millis();
+          aircraftCount = count;
+          lastPlaneFetchFixMs = millis();
+          parseSuccess = true;
 
-        int routesFetched = 0;
-        for (size_t i = 0; i < aircraftCount && routesFetched < 2; i++) {
-          if (aircraftList[i].route[0] == '\0' && strcmp(aircraftList[i].callsign, "NOCALL") != 0 && !aircraftList[i].is_mil) {
-            fetchRouteForCallsign(aircraftList[i].callsign, aircraftList[i].route, sizeof(aircraftList[i].route));
-            routesFetched++;
+          int routesFetched = 0;
+          for (size_t i = 0; i < aircraftCount && routesFetched < 2; i++) {
+            if (aircraftList[i].route[0] == '\0' && strcmp(aircraftList[i].callsign, "NOCALL") != 0 && !aircraftList[i].is_mil) {
+              fetchRouteForCallsign(aircraftList[i].callsign, aircraftList[i].route, sizeof(aircraftList[i].route));
+              routesFetched++;
+            }
           }
-        }
 
-        Serial.printf("[ADS-B] Parsed %u aircraft from API (selected: %u priority/closest, Free RAM: %u B)\n", 
-                      (unsigned int)acList.size(), (unsigned int)count, (unsigned int)ESP.getFreeHeap());
+          Serial.printf("[ADS-B] Parsed %u aircraft from API (selected: %u priority/closest, Free RAM: %u B)\n", 
+                        (unsigned int)acList.size(), (unsigned int)count, (unsigned int)ESP.getFreeHeap());
+        }
+      } else {
+        Serial.printf("[ADS-B] HTTP error: %d (src %d)\n", httpCode, attempt);
+        http.end();
+        client.stop();
       }
-    } else {
-      Serial.printf("[ADS-B] HTTP error: %d\n", httpCode);
-      http.end();
-      client.stop();
     }
   }
 
@@ -2754,6 +2767,8 @@ int drawPngLine(PNGDRAW* pDraw) {
 }
 
 void decodeRadarImage() {
+  releaseCanvas();
+
   if (!SPIFFS.exists(RADAR_FILE)) {
     if (SPIFFS.exists(RADAR_RAW_CACHE_FILE)) SPIFFS.remove(RADAR_RAW_CACHE_FILE);
     radarRawCacheValid = false;
