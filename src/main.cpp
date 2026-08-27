@@ -135,19 +135,7 @@ inline const char* getCompassDirText(float deg) {
 }
 
 #include "world_borders.h"
-
-// Landmark Cities
-struct City { const char* name; float lat; float lon; bool isMajor; };
-static const City CITIES[] = {
-  {"BA", 48.1486, 17.1077, true},  {"TT", 48.3775, 17.5883, false},
-  {"NR", 48.3061, 18.0864, true},  {"TN", 48.8945, 18.0444, false},
-  {"ZA", 49.2231, 18.7397, true},  {"BB", 48.7363, 19.1462, true},
-  {"PO", 48.9984, 21.2393, true},  {"KE", 48.7164, 21.2611, true},
-  {"PP", 49.0595, 20.2978, false}, {"VIE", 48.1103, 16.5697, true},
-  {"BUD", 47.4369, 19.2556, true}, {"PRG", 50.1008, 14.2600, true},
-  {"KRK", 50.0777, 19.7848, true}
-};
-static constexpr size_t CITY_COUNT = sizeof(CITIES) / sizeof(CITIES[0]);
+#include "cities.h"
 
 // Configuration & Runtime Variables
 float centerLat = atof(DEFAULT_CENTER_LAT);
@@ -2747,7 +2735,9 @@ void drawPlaneRadarGrid(LovyanGFX& target) {
 
     int sx = (int)roundf(gpsToScreenX(CITIES[i].lat, CITIES[i].lon));
     int sy = (int)roundf(gpsToScreenY(CITIES[i].lat, CITIES[i].lon));
-    if (sx >= 10 && sx <= TFT_W - 10 && sy >= 10 && sy <= TFT_H - 10) {
+    int dx = sx - 120;
+    int dy = sy - 120;
+    if (dx * dx + dy * dy <= 102 * 102) {
       target.drawLine(sx - 2, sy, sx + 2, sy, TFT_RED);
       target.drawLine(sx, sy - 2, sx, sy + 2, TFT_RED);
       target.drawString(CITIES[i].name, sx, sy - 3);
@@ -2832,38 +2822,43 @@ void drawPlanesOverlay(LovyanGFX& target) {
     }
   }
 
-  if (currentRadiusKm <= 50.0f) {
-    for (size_t i = 0; i < aircraftCount; i++) {
-      if (planes[i].is_on_screen) planes[i].show_tag = true;
+  // Dynamic tag limits based on zoom level to ensure high performance and clear readability
+  int maxAllowedTags = 1;
+  if (currentRadiusKm <= 10.0f) maxAllowedTags = 2;
+  else if (currentRadiusKm <= 25.0f) maxAllowedTags = 3;
+  else if (currentRadiusKm <= 50.0f) maxAllowedTags = 3;
+  else if (currentRadiusKm <= 100.0f) maxAllowedTags = 2;
+  else maxAllowedTags = 1;
+
+  // 1. Emergency & Military aircraft always have highest priority for tags
+  for (size_t i = 0; i < aircraftCount; i++) {
+    if (planes[i].is_on_screen && (planes[i].ac.is_emergency || planes[i].ac.is_mil)) {
+      planes[i].show_tag = true;
     }
-  } else {
+  }
+
+  // 2. Fill remaining tag slots with the closest aircraft to center
+  int currentTags = 0;
+  for (size_t i = 0; i < aircraftCount; i++) {
+    if (planes[i].show_tag) currentTags++;
+  }
+
+  while (currentTags < maxAllowedTags) {
+    float minDist = 999999.0f;
+    int bestIdx = -1;
     for (size_t i = 0; i < aircraftCount; i++) {
-      if (planes[i].is_on_screen && (planes[i].ac.is_emergency || planes[i].ac.is_mil)) {
-        planes[i].show_tag = true;
-      }
-    }
-    int currentTags = 0;
-    for (size_t i = 0; i < aircraftCount; i++) {
-      if (planes[i].show_tag) currentTags++;
-    }
-    const int maxTags = (currentRadiusKm <= 100.0f) ? 3 : 2;
-    while (currentTags < maxTags) {
-      float minDist = 999999.0f;
-      int bestIdx = -1;
-      for (size_t i = 0; i < aircraftCount; i++) {
-        if (planes[i].is_on_screen && !planes[i].show_tag) {
-          if (planes[i].dist < minDist) {
-            minDist = planes[i].dist;
-            bestIdx = (int)i;
-          }
+      if (planes[i].is_on_screen && !planes[i].show_tag) {
+        if (planes[i].dist < minDist) {
+          minDist = planes[i].dist;
+          bestIdx = (int)i;
         }
       }
-      if (bestIdx >= 0) {
-        planes[bestIdx].show_tag = true;
-        currentTags++;
-      } else {
-        break;
-      }
+    }
+    if (bestIdx >= 0) {
+      planes[bestIdx].show_tag = true;
+      currentTags++;
+    } else {
+      break;
     }
   }
 
@@ -2938,7 +2933,9 @@ void drawWeatherOverlay(LovyanGFX& target, bool showTime) {
 
     int sx = (int)roundf(gpsToScreenX(CITIES[i].lat, CITIES[i].lon));
     int sy = (int)roundf(gpsToScreenY(CITIES[i].lat, CITIES[i].lon));
-    if (sx >= 10 && sx <= TFT_W - 10 && sy >= 10 && sy <= TFT_H - 10) {
+    int dx = sx - 120;
+    int dy = sy - 120;
+    if (dx * dx + dy * dy <= 102 * 102) {
       target.drawLine(sx - 2, sy, sx + 2, sy, TFT_RED);
       target.drawLine(sx, sy - 2, sx, sy + 2, TFT_RED);
       target.drawString(CITIES[i].name, sx, sy - 3);
