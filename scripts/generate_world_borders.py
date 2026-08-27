@@ -3,20 +3,41 @@ import urllib.request
 import math
 import os
 
-print("Fetching world country borders GeoJSON...")
-# Using a clean, highly reliable simplified world countries GeoJSON dataset
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_boundary_lines_land.geojson"
+print("Fetching world country borders & coastlines GeoJSON...")
+urls = [
+    ("Land Boundaries", "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_boundary_lines_land.geojson"),
+    ("Coastlines", "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_coastline.geojson")
+]
 
-req = urllib.request.Request(url, headers={"User-Agent": "ESP-GlobalRadar/2.0"})
-try:
-    with urllib.request.urlopen(req) as resp:
-        geojson = json.loads(resp.read().decode('utf-8'))
-except Exception as e:
-    print(f"Fallback to 110m dataset due to: {e}")
-    url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_boundary_lines_land.geojson"
+raw_lines = []
+for label, url in urls:
+    print(f"Downloading {label} from {url}...")
     req = urllib.request.Request(url, headers={"User-Agent": "ESP-GlobalRadar/2.0"})
-    with urllib.request.urlopen(req) as resp:
-        geojson = json.loads(resp.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(req) as resp:
+            geojson = json.loads(resp.read().decode('utf-8'))
+            for feat in geojson.get("features", []):
+                geom = feat.get("geometry")
+                if not geom:
+                    continue
+                gtype = geom["type"]
+                coords = geom["coordinates"]
+                if gtype == "LineString":
+                    raw_lines.append(coords)
+                elif gtype == "MultiLineString":
+                    for line in coords:
+                        raw_lines.append(line)
+                elif gtype == "Polygon":
+                    for ring in coords:
+                        raw_lines.append(ring)
+                elif gtype == "MultiPolygon":
+                    for poly in coords:
+                        for ring in poly:
+                            raw_lines.append(ring)
+    except Exception as e:
+        print(f"Error downloading {label}: {e}")
+
+print(f"Total raw lines: {len(raw_lines)}")
 
 # Douglas-Peucker simplification
 def point_line_dist(pt, start, end):
@@ -43,29 +64,7 @@ def simplify_dp(points, tolerance):
     else:
         return [points[0], points[-1]]
 
-raw_lines = []
-for feat in geojson["features"]:
-    geom = feat.get("geometry")
-    if not geom:
-        continue
-    gtype = geom["type"]
-    coords = geom["coordinates"]
-    if gtype == "LineString":
-        raw_lines.append(coords)
-    elif gtype == "MultiLineString":
-        for line in coords:
-            raw_lines.append(line)
-    elif gtype == "Polygon":
-        for ring in coords:
-            raw_lines.append(ring)
-    elif gtype == "MultiPolygon":
-        for poly in coords:
-            for ring in poly:
-                raw_lines.append(ring)
-
-print(f"Total raw lines: {len(raw_lines)}")
-
-# Simplify lines (tolerance in degrees, ~0.08 deg = ~8 km precision)
+# Simplify lines (tolerance in degrees: ~0.08 deg = ~8 km precision)
 TOLERANCE = 0.08
 simplified_lines = []
 for line in raw_lines:
@@ -76,7 +75,7 @@ for line in raw_lines:
 
 print(f"Simplified lines: {len(simplified_lines)}")
 
-# Break lines longer than 100 points into smaller segments for better bounding box culling
+# Break lines longer than 80 points into smaller segments for tight bounding box culling
 MAX_SEG_PTS = 80
 segments = []
 for line in simplified_lines:
@@ -105,7 +104,7 @@ header_path = os.path.join(os.path.dirname(__file__), "..", "include", "world_bo
 
 with open(header_path, "w", encoding="utf-8") as f:
     f.write("// =======================================================================================\n")
-    f.write("// Auto-generated Global World Borders Dataset (Natural Earth 50m Land Boundaries)\n")
+    f.write("// Auto-generated Global World Borders & Coastlines Dataset (Natural Earth 50m)\n")
     f.write(f"// Total segments: {len(segments)}, Total vertices: {total_pts}\n")
     f.write("// Coordinates format: fixed-point int16_t (degrees * 100)\n")
     f.write("// =======================================================================================\n\n")
