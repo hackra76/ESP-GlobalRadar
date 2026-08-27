@@ -1910,19 +1910,22 @@ bool downloadLatestRadar() {
   curDecodingScale = tile_scale;
 
   int tilesDownloaded = 0;
+  String tileHost = rainViewerHost;
+  if (tileHost.startsWith("https://")) {
+    tileHost = "http://" + tileHost.substring(8);
+  }
+
   for (int ty = min_ty; ty <= max_ty; ty++) {
     for (int tx = min_tx; tx <= max_tx; tx++) {
       curDecodingTx = tx;
       curDecodingTy = ty;
 
-      String tileUrl = rainViewerHost + radarPath + "/256/" + String(z) + "/" + String(tx) + "/" + String(ty) + "/" + String(RAINVIEWER_COLOR_SCHEME) + "/1_1.png";
+      String tileUrl = tileHost + radarPath + "/256/" + String(z) + "/" + String(tx) + "/" + String(ty) + "/" + String(RAINVIEWER_COLOR_SCHEME) + "/1_1.png";
       Serial.printf("[RADAR] Downloading tile (%d, %d, z=%d): %s\n", tx, ty, z, tileUrl.c_str());
 
-      WiFiClientSecure clientImg;
-      clientImg.setInsecure();
-      clientImg.setHandshakeTimeout(8000);
+      WiFiClient clientImg;
       HTTPClient httpImg;
-      httpImg.setTimeout(12000);
+      httpImg.setTimeout(8000);
       httpImg.setUserAgent("ESP-GlobalRadar/2.0");
 
       if (httpImg.begin(clientImg, tileUrl)) {
