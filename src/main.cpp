@@ -70,7 +70,6 @@ float currentTileOffsetPx = 0.0f;
 float currentTileOffsetPy = 0.0f;
 
 uint16_t currLine565[RADAR_TILE_SIZE];
-static uint8_t* tileChunks[4] = {nullptr, nullptr, nullptr, nullptr};
 
 void ensureCanvas() {
   if (!canvasReady) {
@@ -162,9 +161,9 @@ bool carouselEnabled = true;
 bool nightModeEnabled = true;
 bool isNightActive = false;
 
-// Zoom Levels (Radius in km & RainViewer Tile Zoom <= 7)
+// Zoom Levels (Radius in km & RainViewer Tile Zoom)
 static const float ZOOM_LEVELS_KM[] = {10.0f, 25.0f, 50.0f, 100.0f, 250.0f};
-static const int ZOOM_LEVELS_Z[]    = {7,     7,     7,     7,      6};
+static const int ZOOM_LEVELS_Z[]    = {7,     7,     7,     6,      5};
 static constexpr int ZOOM_LEVEL_COUNT = sizeof(ZOOM_LEVELS_KM) / sizeof(ZOOM_LEVELS_KM[0]);
 int zoomIndex = 2; // Default 50 km
 float currentRadiusKm = atof(DEFAULT_RADIUS_KM_TEXT);
@@ -374,10 +373,6 @@ void setZoomIndex(int newIndex) {
   prefs.end();
 
   releaseCanvas();
-
-  if (SPIFFS.exists(RADAR_FILE)) {
-    decodeRadarImage();
-  }
 
   if (currentMode == MODE_WEATHER || currentMode == MODE_COMBINED) {
     downloadLatestRadar();
@@ -1729,8 +1724,91 @@ void setupWebServer() {
 
 
 // =======================================================================================
-// 5. RAINVIEWER GLOBAL WEATHER RADAR (FETCH & TILE DECODING)
+// 5. RAINVIEWER GLOBAL WEATHER RADAR (MULTI-TILE FETCH & RESAMPLING)
 // =======================================================================================
+
+static uint8_t* curDecodingGrid = nullptr;
+static int curDecodingTx = 0;
+static int curDecodingTy = 0;
+static float curDecodingCenterX = 0.0f;
+static float curDecodingCenterY = 0.0f;
+static float curDecodingScale = 1.0f;
+
+void* pngOpen(const char* filename, int32_t* size) {
+  pngFile = SPIFFS.open(filename, "r");
+  if (!pngFile) return nullptr;
+  *size = pngFile.size();
+  return &pngFile;
+}
+
+void pngClose(void* handle) {
+  if (pngFile) pngFile.close();
+}
+
+int32_t pngRead(PNGFILE* handle, uint8_t* buffer, int32_t length) {
+  return pngFile.read(buffer, length);
+}
+
+int32_t pngSeek(PNGFILE* handle, int32_t position) {
+  return pngFile.seek(position) ? position : -1;
+}
+
+int drawPngLine(PNGDRAW* pDraw) {
+  int ty = pDraw->y;
+  if (ty < 0 || ty >= RADAR_TILE_SIZE || !curDecodingGrid) return 1;
+
+  uint8_t* p = (uint8_t*)pDraw->pPixels;
+  float world_y = (float)(curDecodingTy * 256 + ty);
+  float d_world_y = world_y - curDecodingCenterY;
+  int sy = (int)roundf(120.0f + d_world_y * curDecodingScale);
+  if (sy < 0 || sy >= TFT_H) return 1;
+
+  float dY_px = (float)sy - 120.0f;
+  float dY_sq = dY_px * dY_px;
+
+  for (int x = 0; x < RADAR_TILE_SIZE; x++) {
+    uint8_t a = 0;
+    uint8_t r = 0, g = 0, b = 0;
+
+    if (pDraw->iPixelType == PNG_PIXEL_TRUECOLOR_ALPHA) {
+      r = p[x * 4 + 0];
+      g = p[x * 4 + 1];
+      b = p[x * 4 + 2];
+      a = p[x * 4 + 3];
+    } else if (pDraw->iPixelType == PNG_PIXEL_TRUECOLOR) {
+      r = p[x * 3 + 0];
+      g = p[x * 3 + 1];
+      b = p[x * 3 + 2];
+      a = (r == 0 && g == 0 && b == 0) ? 0 : 255;
+    } else {
+      png.getLineAsRGB565(pDraw, currLine565, PNG_RGB565_LITTLE_ENDIAN, 0x00000000);
+      uint16_t c565 = currLine565[x];
+      if (c565 != 0) {
+        r = ((c565 >> 11) & 0x1F) << 3;
+        g = ((c565 >> 5) & 0x3F) << 2;
+        b = (c565 & 0x1F) << 3;
+        a = 255;
+      }
+    }
+
+    if (a < 15) continue; // No precipitation
+
+    float world_x = (float)(curDecodingTx * 256 + x);
+    float d_world_x = world_x - curDecodingCenterX;
+    int sx = (int)roundf(120.0f + d_world_x * curDecodingScale);
+    if (sx < 0 || sx >= TFT_W) continue;
+
+    float dX_px = (float)sx - 120.0f;
+    if (dX_px * dX_px + dY_sq > 14400.0f) continue; // Outside round screen
+
+    // Convert to 8-bit RGB332
+    uint8_t col8 = (uint8_t)(((r & 0xE0)) | ((g & 0xE0) >> 3) | ((b & 0xC0) >> 6));
+    if (col8 == 0x00) col8 = 0x04;
+
+    curDecodingGrid[sy * TFT_W + sx] = col8;
+  }
+  return 1;
+}
 
 bool downloadLatestRadar() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -1738,7 +1816,7 @@ bool downloadLatestRadar() {
     return false;
   }
 
-  releaseCanvas(); // Release 58 KB RAM for safe TLS handshake
+  releaseCanvas(); // Release 58 KB RAM for safe TLS handshake & grid allocation
 
   Serial.println("[RADAR] Checking latest image from RainViewer API (HTTPS)...");
 
@@ -1801,68 +1879,188 @@ bool downloadLatestRadar() {
   if (z > RAINVIEWER_MAX_ZOOM) z = RAINVIEWER_MAX_ZOOM;
 
   double n = (double)(1 << z);
-  double wx = (centerLon + 180.0) / 360.0 * n;
+  double center_wx = (centerLon + 180.0) / 360.0 * n;
   double latRad = (double)centerLat * DEG_TO_RAD;
-  double wy = (1.0 - asinh(tan(latRad)) / M_PI) / 2.0 * n;
+  double center_wy = (1.0 - asinh(tan(latRad)) / M_PI) / 2.0 * n;
 
-  currentTileX = (int)floor(wx);
-  currentTileY = (int)floor(wy);
-  currentTileOffsetPx = (float)((wx - (double)currentTileX) * 256.0);
-  currentTileOffsetPy = (float)((wy - (double)currentTileY) * 256.0);
+  float m_per_tile_px = (40075017.0f * cosf(centerLat * DEG_TO_RAD)) / (256.0f * (float)(1 << z));
+  float m_per_screen_px = (currentRadiusKm * 1000.0f) / 120.0f;
+  float tile_scale = m_per_tile_px / m_per_screen_px;
 
-  String tileUrl = rainViewerHost + radarPath + "/256/" + String(z) + "/" + String(currentTileX) + "/" + String(currentTileY) + "/" + String(RAINVIEWER_COLOR_SCHEME) + "/1_1.png";
-  Serial.printf("[RADAR] Downloading tile (z=%d, x=%d, y=%d, px=%.1f, py=%.1f): %s\n", 
-                z, currentTileX, currentTileY, currentTileOffsetPx, currentTileOffsetPy, tileUrl.c_str());
+  float radius_world_px = 120.0f / tile_scale;
+  float center_world_x = (float)(center_wx * 256.0);
+  float center_world_y = (float)(center_wy * 256.0);
 
-  bool dlSuccess = false;
-  for (int attempt = 1; attempt <= 2 && !dlSuccess; attempt++) {
-    WiFiClientSecure clientImg;
-    clientImg.setInsecure();
-    clientImg.setHandshakeTimeout(10000);
-    HTTPClient httpImg;
-    httpImg.setTimeout(18000);
-    httpImg.setUserAgent("ESP-GlobalRadar/2.0");
+  int min_tx = (int)floorf((center_world_x - radius_world_px) / 256.0f);
+  int max_tx = (int)floorf((center_world_x + radius_world_px) / 256.0f);
+  int min_ty = (int)floorf((center_world_y - radius_world_px) / 256.0f);
+  int max_ty = (int)floorf((center_world_y + radius_world_px) / 256.0f);
 
-    if (httpImg.begin(clientImg, tileUrl)) {
-      int imgCode = httpImg.GET();
-      if (imgCode == HTTP_CODE_OK) {
-        if (SPIFFS.exists(RADAR_FILE)) SPIFFS.remove(RADAR_FILE);
-        File f = SPIFFS.open(RADAR_FILE, "w");
-        if (!f) {
-          SPIFFS.format();
-          SPIFFS.begin(true);
-          f = SPIFFS.open(RADAR_FILE, "w");
+  uint8_t* radarGrid = (uint8_t*)malloc(TFT_W * TFT_H);
+  if (!radarGrid) {
+    Serial.println("[RADAR] Error: Out of memory for radar grid buffer!");
+    ensureCanvas();
+    return false;
+  }
+  memset(radarGrid, 0, TFT_W * TFT_H);
+
+  curDecodingGrid = radarGrid;
+  curDecodingCenterX = center_world_x;
+  curDecodingCenterY = center_world_y;
+  curDecodingScale = tile_scale;
+
+  int tilesDownloaded = 0;
+  for (int ty = min_ty; ty <= max_ty; ty++) {
+    for (int tx = min_tx; tx <= max_tx; tx++) {
+      curDecodingTx = tx;
+      curDecodingTy = ty;
+
+      String tileUrl = rainViewerHost + radarPath + "/256/" + String(z) + "/" + String(tx) + "/" + String(ty) + "/" + String(RAINVIEWER_COLOR_SCHEME) + "/1_1.png";
+      Serial.printf("[RADAR] Downloading tile (%d, %d, z=%d): %s\n", tx, ty, z, tileUrl.c_str());
+
+      WiFiClientSecure clientImg;
+      clientImg.setInsecure();
+      clientImg.setHandshakeTimeout(8000);
+      HTTPClient httpImg;
+      httpImg.setTimeout(12000);
+      httpImg.setUserAgent("ESP-GlobalRadar/2.0");
+
+      if (httpImg.begin(clientImg, tileUrl)) {
+        int imgCode = httpImg.GET();
+        if (imgCode == HTTP_CODE_OK) {
+          if (SPIFFS.exists(RADAR_FILE)) SPIFFS.remove(RADAR_FILE);
+          File f = SPIFFS.open(RADAR_FILE, "w");
+          if (f) {
+            httpImg.writeToStream(&f);
+            f.flush();
+            size_t sz = f.position();
+            f.close();
+            if (sz > 0) {
+              if (png.open(RADAR_FILE, pngOpen, pngClose, pngRead, pngSeek, drawPngLine) == PNG_SUCCESS) {
+                png.decode(nullptr, 0);
+                png.close();
+                tilesDownloaded++;
+              }
+            }
+          }
+        } else {
+          Serial.printf("[RADAR] HTTP error %d on tile (%d, %d)\n", imgCode, tx, ty);
         }
-        if (f) {
-          httpImg.writeToStream(&f);
-          f.flush();
-          size_t sz = f.position();
-          f.close();
-          if (sz > 0) {
-            prefs.begin("radar", false);
-            prefs.putUInt("last_ts", radarTimestamp);
-            prefs.putString("last_path", radarPath);
-            prefs.end();
-            Serial.printf("[RADAR] Tile saved to SPIFFS (%u B)!\n", (unsigned int)sz);
-            dlSuccess = true;
-          } else {
-            Serial.println("[RADAR] Warning: Downloaded tile size is 0 bytes!");
+        httpImg.end();
+        clientImg.stop();
+      }
+    }
+  }
+
+  curDecodingGrid = nullptr;
+
+  // Process Alerts and Cache
+  minPrecipDistSqPx = 999999.0f;
+  alertIncomingPixelCount = 0;
+  alertIncomingMinSqPx = 999999.0f;
+  alertIncomingTargetDx = 0.0f;
+  alertIncomingTargetDy = 0.0f;
+
+  alertAnyPixelCount = 0;
+  alertAnyMinSqPx = 999999.0f;
+  alertAnyTargetDx = 0.0f;
+  alertAnyTargetDy = 0.0f;
+
+  for (int sy = 0; sy < TFT_H; sy++) {
+    float dY_px = (float)sy - 120.0f;
+    for (int sx = 0; sx < TFT_W; sx++) {
+      float dX_px = (float)sx - 120.0f;
+      float dSq = dX_px * dX_px + dY_px * dY_px;
+      if (dSq > 14400.0f) continue;
+
+      uint8_t col8 = radarGrid[sy * TFT_W + sx];
+      if (col8 != 0x00) {
+        if (dSq < minPrecipDistSqPx) minPrecipDistSqPx = dSq;
+        if (rainAlertThresholdKm > 0.0f) {
+          float distKm = (sqrtf(dSq) / 120.0f) * currentRadiusKm;
+          if (distKm <= rainAlertThresholdKm) {
+            alertAnyPixelCount++;
+            if (dSq < alertAnyMinSqPx) {
+              alertAnyMinSqPx = dSq;
+              alertAnyTargetDx = dX_px;
+              alertAnyTargetDy = dY_px;
+            }
+            float effectiveWindDir = (windDir700hPa >= 0.0f) ? windDir700hPa : windDirSurface;
+            if (effectiveWindDir >= 0.0f) {
+              float pixelBearing = atan2f(dX_px, -dY_px) * 57.2957795f;
+              if (pixelBearing < 0.0f) pixelBearing += 360.0f;
+              float diff = fabsf(pixelBearing - effectiveWindDir);
+              if (diff > 180.0f) diff = 360.0f - diff;
+              if (diff <= 60.0f) {
+                alertIncomingPixelCount++;
+                if (dSq < alertIncomingMinSqPx) {
+                  alertIncomingMinSqPx = dSq;
+                  alertIncomingTargetDx = dX_px;
+                  alertIncomingTargetDy = dY_px;
+                }
+              }
+            }
           }
         }
-      } else {
-        Serial.printf("[RADAR] HTTP tile download error: %d\n", imgCode);
       }
-      httpImg.end();
-      clientImg.stop();
     }
-    if (!dlSuccess && attempt < 2) delay(1000);
   }
 
-  if (dlSuccess) {
-    decodeRadarImage();
+  if (SPIFFS.exists(RADAR_RAW_CACHE_FILE)) SPIFFS.remove(RADAR_RAW_CACHE_FILE);
+  File fRawOut = SPIFFS.open(RADAR_RAW_CACHE_FILE, "w");
+  if (fRawOut) {
+    fRawOut.write(radarGrid, TFT_W * TFT_H);
+    fRawOut.flush();
+    fRawOut.close();
+    radarRawCacheValid = true;
+    prefs.begin("radar", false);
+    prefs.putUInt("last_ts", radarTimestamp);
+    prefs.putString("last_path", radarPath);
+    prefs.end();
   }
+  free(radarGrid);
+
+  int totalFoundPixels = alertAnyPixelCount + alertIncomingPixelCount;
+  Serial.printf("[RADAR] Decoded precipitation pixels in range: %d (Any: %d, Incoming: %d, radius: %.0f km, tiles: %d)\n", 
+                totalFoundPixels, alertAnyPixelCount, alertIncomingPixelCount, currentRadiusKm, tilesDownloaded);
+
+  if (rainAlertThresholdKm > 0.0f && alertIncomingPixelCount >= rainAlertMinPixels && alertIncomingMinSqPx <= 14400.0f) {
+    rainAlertActive = true;
+    isIncomingAlert = true;
+    closestPrecipDistKm = (sqrtf(alertIncomingMinSqPx) / 120.0f) * currentRadiusKm;
+    alertTargetDistPx = sqrtf(alertIncomingMinSqPx);
+
+    float rad = atan2f(alertIncomingTargetDx, -alertIncomingTargetDy);
+    float deg = rad * 57.2957795f;
+    if (deg < 0.0f) deg += 360.0f;
+    alertBearingDeg = deg;
+    strlcpy(alertBearingDir, getCompassDirText(deg), sizeof(alertBearingDir));
+  } else if (rainAlertThresholdKm > 0.0f && alertAnyPixelCount >= rainAlertMinPixels && alertAnyMinSqPx <= 14400.0f) {
+    rainAlertActive = true;
+    isIncomingAlert = false;
+    closestPrecipDistKm = (sqrtf(alertAnyMinSqPx) / 120.0f) * currentRadiusKm;
+    alertTargetDistPx = sqrtf(alertAnyMinSqPx);
+
+    float rad = atan2f(alertAnyTargetDx, -alertAnyTargetDy);
+    float deg = rad * 57.2957795f;
+    if (deg < 0.0f) deg += 360.0f;
+    alertBearingDeg = deg;
+    strlcpy(alertBearingDir, getCompassDirText(deg), sizeof(alertBearingDir));
+  } else {
+    closestPrecipDistKm = (minPrecipDistSqPx <= 14400.0f) ? (sqrtf(minPrecipDistSqPx) / 120.0f) * currentRadiusKm : -1.0f;
+    rainAlertActive = false;
+    isIncomingAlert = false;
+    alertBearingDeg = -1.0f;
+    alertTargetDistPx = 0.0f;
+    alertBearingDir[0] = '\0';
+  }
+
   ensureCanvas();
-  return dlSuccess;
+  return (tilesDownloaded > 0);
+}
+
+void decodeRadarImage() {
+  downloadLatestRadar();
 }
 
 /**
@@ -2231,34 +2429,6 @@ void drawEdgeIndicator(LovyanGFX& target, float lat, float lon, bool is_mil) {
   target.drawCircle(edgeX, edgeY, 3, TFT_BLACK);
 }
 
-class BufferedStream : public Stream {
-  Stream* _s;
-  uint32_t _timeoutMs;
-public:
-  BufferedStream(Stream* s, uint32_t timeoutMs = 8000) : _s(s), _timeoutMs(timeoutMs) {}
-  int available() override { return _s ? _s->available() : 0; }
-  int read() override {
-    if (!_s) return -1;
-    uint32_t start = millis();
-    while (!_s->available()) {
-      if (millis() - start >= _timeoutMs) return -1;
-      delay(1);
-    }
-    return _s->read();
-  }
-  int peek() override {
-    if (!_s) return -1;
-    uint32_t start = millis();
-    while (!_s->available()) {
-      if (millis() - start >= _timeoutMs) return -1;
-      delay(1);
-    }
-    return _s->peek();
-  }
-  void flush() override { if (_s) _s->flush(); }
-  size_t write(uint8_t c) override { return _s ? _s->write(c) : 0; }
-};
-
 void fetchPlanesData() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[ADS-B] WiFi not connected, skipping aircraft fetch.");
@@ -2307,8 +2477,7 @@ void fetchPlanesData() {
         filter["ac"][0]["emergency"] = true;
 
         JsonDocument doc;
-        BufferedStream bStream(http.getStreamPtr(), 10000);
-        DeserializationError err = deserializeJson(doc, bStream, DeserializationOption::Filter(filter));
+        DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
         
         http.end();
         client.stop();
@@ -2717,225 +2886,7 @@ void drawWeatherOverlay(LovyanGFX& target, bool showTime) {
 }
 
 
-// =======================================================================================
-// 7. PNG DECODER & TILE RESAMPLING TO RAW CACHE
-// =======================================================================================
 
-void* pngOpen(const char* filename, int32_t* size) {
-  pngFile = SPIFFS.open(filename, "r");
-  if (!pngFile) return nullptr;
-  *size = pngFile.size();
-  return &pngFile;
-}
-
-void pngClose(void* handle) {
-  if (pngFile) pngFile.close();
-}
-
-int32_t pngRead(PNGFILE* handle, uint8_t* buffer, int32_t length) {
-  return pngFile.read(buffer, length);
-}
-
-int32_t pngSeek(PNGFILE* handle, int32_t position) {
-  return pngFile.seek(position) ? position : -1;
-}
-
-int drawPngLine(PNGDRAW* pDraw) {
-  int ty = pDraw->y;
-  if (ty < 0 || ty >= RADAR_TILE_SIZE) return 1;
-  int chunkIdx = ty >> 6;
-  int rowInChunk = ty & 63;
-  if (!tileChunks[chunkIdx]) return 1;
-
-  png.getLineAsRGB565(pDraw, currLine565, PNG_RGB565_LITTLE_ENDIAN, 0x00000000);
-  uint8_t* rowDst = &tileChunks[chunkIdx][rowInChunk * RADAR_TILE_SIZE];
-
-  for (int tx = 0; tx < RADAR_TILE_SIZE; tx++) {
-    uint16_t c565 = currLine565[tx];
-    if (c565 == 0x0000) {
-      rowDst[tx] = 0x00;
-    } else {
-      uint8_t r = (c565 >> 11) & 0x1F;
-      uint8_t g = (c565 >> 5) & 0x3F;
-      uint8_t b = c565 & 0x1F;
-      uint8_t col8 = (uint8_t)((((r >> 2) & 0x07) << 5) | (((g >> 3) & 0x07) << 2) | ((b >> 3) & 0x03));
-      if (col8 == 0x00) col8 = 0x04;
-      rowDst[tx] = col8;
-    }
-  }
-  return 1;
-}
-
-void decodeRadarImage() {
-  releaseCanvas();
-
-  if (!SPIFFS.exists(RADAR_FILE)) {
-    if (SPIFFS.exists(RADAR_RAW_CACHE_FILE)) SPIFFS.remove(RADAR_RAW_CACHE_FILE);
-    radarRawCacheValid = false;
-    rainAlertActive = false;
-    isIncomingAlert = false;
-    alertBearingDeg = -1.0f;
-    alertTargetDistPx = 0.0f;
-    alertBearingDir[0] = '\0';
-    closestPrecipDistKm = -1.0f;
-    return;
-  }
-
-  bool allocOk = true;
-  for (int i = 0; i < 4; i++) {
-    if (tileChunks[i]) free(tileChunks[i]);
-    tileChunks[i] = (uint8_t*)malloc(64 * RADAR_TILE_SIZE);
-    if (!tileChunks[i]) allocOk = false;
-    else memset(tileChunks[i], 0, 64 * RADAR_TILE_SIZE);
-  }
-
-  if (!allocOk) {
-    Serial.println("[RADAR] Error: Failed to allocate tile buffer chunks!");
-    for (int i = 0; i < 4; i++) {
-      if (tileChunks[i]) { free(tileChunks[i]); tileChunks[i] = nullptr; }
-    }
-    radarRawCacheValid = false;
-    return;
-  }
-
-  if (png.open(RADAR_FILE, pngOpen, pngClose, pngRead, pngSeek, drawPngLine) == PNG_SUCCESS) {
-    png.decode(nullptr, 0);
-    png.close();
-  }
-
-  if (SPIFFS.exists(RADAR_RAW_CACHE_FILE)) SPIFFS.remove(RADAR_RAW_CACHE_FILE);
-  fRawOut = SPIFFS.open(RADAR_RAW_CACHE_FILE, "w");
-  if (!fRawOut) {
-    Serial.println("[RADAR] Error creating raw cache file for write!");
-    for (int i = 0; i < 4; i++) {
-      if (tileChunks[i]) { free(tileChunks[i]); tileChunks[i] = nullptr; }
-    }
-    radarRawCacheValid = false;
-    return;
-  }
-
-  minPrecipDistSqPx = 999999.0f;
-  alertIncomingPixelCount = 0;
-  alertIncomingMinSqPx = 999999.0f;
-  alertIncomingTargetDx = 0.0f;
-  alertIncomingTargetDy = 0.0f;
-
-  alertAnyPixelCount = 0;
-  alertAnyMinSqPx = 999999.0f;
-  alertAnyTargetDx = 0.0f;
-  alertAnyTargetDy = 0.0f;
-
-  int z = ZOOM_LEVELS_Z[zoomIndex];
-  if (z > RAINVIEWER_MAX_ZOOM) z = RAINVIEWER_MAX_ZOOM;
-
-  float m_per_tile_px = (40075017.0f * cosf(centerLat * DEG_TO_RAD)) / (256.0f * (float)(1 << z));
-  float m_per_screen_px = (currentRadiusKm * 1000.0f) / 120.0f;
-  float tile_scale = m_per_tile_px / m_per_screen_px;
-
-  for (int sy = 0; sy < TFT_H; sy++) {
-    uint8_t row8[TFT_W];
-    float dY_px = (float)sy - 120.0f;
-
-    for (int sx = 0; sx < TFT_W; sx++) {
-      float dX_px = (float)sx - 120.0f;
-      float dSq = dX_px * dX_px + dY_px * dY_px;
-      if (dSq > 14400.0f) {
-        row8[sx] = 0x00;
-        continue;
-      }
-
-      int tx = (int)roundf(currentTileOffsetPx + dX_px / tile_scale);
-      int ty = (int)roundf(currentTileOffsetPy + dY_px / tile_scale);
-
-      uint8_t col8 = 0x00;
-      if (tx >= 0 && tx < RADAR_TILE_SIZE && ty >= 0 && ty < RADAR_TILE_SIZE) {
-        int chunkIdx = ty >> 6;
-        int rowInChunk = ty & 63;
-        if (tileChunks[chunkIdx]) {
-          col8 = tileChunks[chunkIdx][rowInChunk * RADAR_TILE_SIZE + tx];
-        }
-      }
-      row8[sx] = col8;
-
-      if (col8 != 0x00) {
-        if (dSq < minPrecipDistSqPx) minPrecipDistSqPx = dSq;
-        if (rainAlertThresholdKm > 0.0f) {
-          float distKm = (sqrtf(dSq) / 120.0f) * currentRadiusKm;
-          if (distKm <= rainAlertThresholdKm) {
-            alertAnyPixelCount++;
-            if (dSq < alertAnyMinSqPx) {
-              alertAnyMinSqPx = dSq;
-              alertAnyTargetDx = dX_px;
-              alertAnyTargetDy = dY_px;
-            }
-            float effectiveWindDir = (windDir700hPa >= 0.0f) ? windDir700hPa : windDirSurface;
-            if (effectiveWindDir >= 0.0f) {
-              float pixelBearing = atan2f(dX_px, -dY_px) * 57.2957795f;
-              if (pixelBearing < 0.0f) pixelBearing += 360.0f;
-              float diff = fabsf(pixelBearing - effectiveWindDir);
-              if (diff > 180.0f) diff = 360.0f - diff;
-              if (diff <= 60.0f) {
-                alertIncomingPixelCount++;
-                if (dSq < alertIncomingMinSqPx) {
-                  alertIncomingMinSqPx = dSq;
-                  alertIncomingTargetDx = dX_px;
-                  alertIncomingTargetDy = dY_px;
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    fRawOut.write(row8, TFT_W);
-  }
-
-  fRawOut.flush();
-  fRawOut.close();
-
-  for (int i = 0; i < 4; i++) {
-    if (tileChunks[i]) {
-      free(tileChunks[i]);
-      tileChunks[i] = nullptr;
-    }
-  }
-  radarRawCacheValid = true;
-
-  int totalFoundPixels = alertAnyPixelCount + alertIncomingPixelCount;
-  Serial.printf("[RADAR] Decoded precipitation pixels in range: %d (Any: %d, Incoming: %d, scale: %.2f, radius: %.0f km)\n", 
-                totalFoundPixels, alertAnyPixelCount, alertIncomingPixelCount, tile_scale, currentRadiusKm);
-
-  if (rainAlertThresholdKm > 0.0f && alertIncomingPixelCount >= rainAlertMinPixels && alertIncomingMinSqPx <= 14400.0f) {
-    rainAlertActive = true;
-    isIncomingAlert = true;
-    closestPrecipDistKm = (sqrtf(alertIncomingMinSqPx) / 120.0f) * currentRadiusKm;
-    alertTargetDistPx = sqrtf(alertIncomingMinSqPx);
-
-    float rad = atan2f(alertIncomingTargetDx, -alertIncomingTargetDy);
-    float deg = rad * 57.2957795f;
-    if (deg < 0.0f) deg += 360.0f;
-    alertBearingDeg = deg;
-    strlcpy(alertBearingDir, getCompassDirText(deg), sizeof(alertBearingDir));
-  } else if (rainAlertThresholdKm > 0.0f && alertAnyPixelCount >= rainAlertMinPixels && alertAnyMinSqPx <= 14400.0f) {
-    rainAlertActive = true;
-    isIncomingAlert = false;
-    closestPrecipDistKm = (sqrtf(alertAnyMinSqPx) / 120.0f) * currentRadiusKm;
-    alertTargetDistPx = sqrtf(alertAnyMinSqPx);
-
-    float rad = atan2f(alertAnyTargetDx, -alertAnyTargetDy);
-    float deg = rad * 57.2957795f;
-    if (deg < 0.0f) deg += 360.0f;
-    alertBearingDeg = deg;
-    strlcpy(alertBearingDir, getCompassDirText(deg), sizeof(alertBearingDir));
-  } else {
-    closestPrecipDistKm = (minPrecipDistSqPx <= 14400.0f) ? (sqrtf(minPrecipDistSqPx) / 120.0f) * currentRadiusKm : -1.0f;
-    rainAlertActive = false;
-    isIncomingAlert = false;
-    alertBearingDeg = -1.0f;
-    alertTargetDistPx = 0.0f;
-    alertBearingDir[0] = '\0';
-  }
-}
 
 /** 
  * Main Unified Rendering:
