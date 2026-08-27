@@ -2,6 +2,7 @@
 
 ## Autonomy & Decision Making
 - **Full Autonomous Mode (Zero-Question Execution)**: Always act fully autonomously. Never ask for confirmation, interactive approval, or ask questions like "Chcete to zapracovať?" / "Mám urobiť túto zmenu?".
+- **Auto-Accept & Direct Applied Changes**: All code changes, edits, and file modifications MUST be directly applied and accepted automatically without requiring manual per-change user approval or prompting.
 - **Direct Implementation on Inquiries**: Whenever the user asks if something is possible, how to fix an issue, or asks about a new feature/tweak, immediately and proactively implement the complete solution, apply file edits, verify compilation, and present the completed working result.
 - **Proactive Execution**: Directly implement solutions, apply edits, and verify results without unnecessary round-trips or asking permission to proceed with obvious next steps.
 - **Verification**: Automatically verify code changes by running the appropriate build (`C:\Users\radod\.platformio\penv\Scripts\platformio.exe run` or `pio run`) after making modifications.
