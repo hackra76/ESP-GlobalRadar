@@ -140,6 +140,7 @@ inline const char* getCompassDirText(float deg) {
 // Configuration & Runtime Variables
 float centerLat = atof(DEFAULT_CENTER_LAT);
 float centerLon = atof(DEFAULT_CENTER_LON);
+String homeCityName = "";
 int timeOffsetHours = DEFAULT_TIME_OFFSET_HOURS;
 int carouselIntervalSec = 30;
 uint32_t carouselIntervalMs = 30000;
@@ -733,6 +734,10 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       </button>
 
       <form onsubmit="saveSettings(event)">
+        <div style="margin-bottom: 10px;">
+          <label>📍 Location Name (Center Pin Label):</label>
+          <input type="text" name="city_name" id="inp-city-name" placeholder="e.g. Brighton, Sliač, Home..." oninput="userIsEditing=true">
+        </div>
         <div class="form-group">
           <div><label>Latitude:</label><input type="text" name="lat" id="inp-lat" required oninput="userIsEditing=true"></div>
           <div><label>Longitude:</label><input type="text" name="lon" id="inp-lon" required oninput="userIsEditing=true"></div>
@@ -899,6 +904,9 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
         if (!userIsEditing && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
           document.getElementById('inp-lat').value = (typeof d.lat === 'number') ? d.lat.toFixed(4) : d.lat;
           document.getElementById('inp-lon').value = (typeof d.lon === 'number') ? d.lon.toFixed(4) : d.lon;
+          if (document.getElementById('inp-city-name') && d.city_name !== undefined) {
+            document.getElementById('inp-city-name').value = d.city_name;
+          }
           document.getElementById('inp-car').value = d.car_int;
           document.getElementById('inp-off').value = d.offset;
           if (document.getElementById('inp-alert-km') && d.alert_km !== undefined) {
@@ -1047,6 +1055,9 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       const fLon = parseFloat(lon).toFixed(4);
       document.getElementById('inp-lat').value = fLat;
       document.getElementById('inp-lon').value = fLon;
+      if (src && document.getElementById('inp-city-name')) {
+        document.getElementById('inp-city-name').value = src;
+      }
       userIsEditing = true;
       if (centerMarker && radiusCircle) {
         const pos = [parseFloat(fLat), parseFloat(fLon)];
@@ -1077,6 +1088,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
 
       const lat = document.getElementById('inp-lat').value;
       const lon = document.getElementById('inp-lon').value;
+      const city_name = document.getElementById('inp-city-name') ? document.getElementById('inp-city-name').value : '';
       const car_int = document.getElementById('inp-car').value;
       const offset = document.getElementById('inp-off').value;
       const alert_km = document.getElementById('inp-alert-km').value;
@@ -1088,6 +1100,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: 'lat=' + encodeURIComponent(lat) + 
                 '&lon=' + encodeURIComponent(lon) + 
+                '&city_name=' + encodeURIComponent(city_name) +
                 '&car_int=' + encodeURIComponent(car_int) + 
                 '&offset=' + encodeURIComponent(offset) +
                 '&alert_km=' + encodeURIComponent(alert_km) +
@@ -1378,6 +1391,7 @@ void handleApiStatus() {
   doc["alert_bearing"] = (alertBearingDeg >= 0.0f) ? (int)roundf(alertBearingDeg) : -1;
   doc["alert_km"] = (int)rainAlertThresholdKm;
   doc["alert_sens"] = rainAlertMinPixels;
+  doc["city_name"] = homeCityName;
   doc["wind_dir_700"] = (windDir700hPa >= 0.0f) ? (int)roundf(windDir700hPa) : -1;
   doc["wind_spd_700"] = roundf(windSpeed700hPa * 10.0f) / 10.0f;
   doc["wind_dir_sfc"] = (windDirSurface >= 0.0f) ? (int)roundf(windDirSurface) : -1;
@@ -1448,6 +1462,10 @@ void handleApiSave() {
   if (server.hasArg("lat") && server.hasArg("lon")) {
     centerLat = server.arg("lat").toFloat();
     centerLon = server.arg("lon").toFloat();
+    if (server.hasArg("city_name")) {
+      homeCityName = server.arg("city_name");
+      homeCityName.trim();
+    }
     if (server.hasArg("car_int")) carouselIntervalSec = constrain(server.arg("car_int").toInt(), 5, 300);
     if (server.hasArg("offset")) timeOffsetHours = server.arg("offset").toInt();
     if (server.hasArg("alert_km")) rainAlertThresholdKm = server.arg("alert_km").toFloat();
@@ -1458,6 +1476,7 @@ void handleApiSave() {
     prefs.begin("radar", false);
     prefs.putFloat("lat", centerLat);
     prefs.putFloat("lon", centerLon);
+    prefs.putString("city_name", homeCityName);
     prefs.putInt("car_int", carouselIntervalSec);
     prefs.putInt("offset", timeOffsetHours);
     prefs.putFloat("alert_km", rainAlertThresholdKm);
@@ -2744,7 +2763,18 @@ void drawPlaneRadarGrid(LovyanGFX& target) {
     }
   }
 
-  // 3. Concentric Range Rings & Crosshairs
+  // 3. Center Home Location Marker & Pin
+  target.drawCircle(cx, cy, 3, TFT_YELLOW);
+  target.drawLine(cx - 5, cy, cx + 5, cy, TFT_YELLOW);
+  target.drawLine(cx, cy - 5, cx, cy + 5, TFT_YELLOW);
+  if (homeCityName.length() > 0) {
+    target.setTextSize(0.75f);
+    target.setTextDatum(textdatum_t::top_center);
+    target.setTextColor(TFT_YELLOW, TFT_BLACK);
+    target.drawString(homeCityName, cx, cy + 5);
+  }
+
+  // 4. Concentric Range Rings & Crosshairs
   uint16_t gridColor = target.color565(0, 200, 0);     
   uint16_t dimGridColor = target.color565(0, 80, 0);   
 
@@ -2940,6 +2970,17 @@ void drawWeatherOverlay(LovyanGFX& target, bool showTime) {
       target.drawLine(sx, sy - 2, sx, sy + 2, TFT_RED);
       target.drawString(CITIES[i].name, sx, sy - 3);
     }
+  }
+
+  // Center Home Location Marker & Pin
+  target.drawCircle(cx, cy, 3, TFT_YELLOW);
+  target.drawLine(cx - 5, cy, cx + 5, cy, TFT_YELLOW);
+  target.drawLine(cx, cy - 5, cx, cy + 5, TFT_YELLOW);
+  if (homeCityName.length() > 0) {
+    target.setTextSize(0.75f);
+    target.setTextDatum(textdatum_t::top_center);
+    target.setTextColor(TFT_YELLOW, TFT_BLACK);
+    target.drawString(homeCityName, cx, cy + 5);
   }
 
   // Radar Circles
@@ -3177,6 +3218,7 @@ void setup() {
   prefs.begin("radar", true);
   centerLat = prefs.getFloat("lat", atof(DEFAULT_CENTER_LAT));
   centerLon = prefs.getFloat("lon", atof(DEFAULT_CENTER_LON));
+  homeCityName = prefs.getString("city_name", "");
   currentRadiusKm = prefs.getFloat("radius", atof(DEFAULT_RADIUS_KM_TEXT));
   timeOffsetHours = prefs.getInt("offset", DEFAULT_TIME_OFFSET_HOURS);
   carouselIntervalSec = prefs.getInt("car_int", 30);
