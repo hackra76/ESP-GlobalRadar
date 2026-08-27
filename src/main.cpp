@@ -2437,8 +2437,7 @@ void fetchPlanesData() {
 
   releaseCanvas();
 
-  float fetchRadiusKm = currentRadiusKm;
-  if (fetchRadiusKm >= 250.0f) fetchRadiusKm = 200.0f;
+  float fetchRadiusKm = min(currentRadiusKm, 120.0f);
   float radiusNm = fetchRadiusKm / 1.852f;
 
   String urls[2] = {
@@ -2462,133 +2461,149 @@ void fetchPlanesData() {
     if (http.begin(client, urls[attempt])) {
       int httpCode = http.GET();
       if (httpCode == HTTP_CODE_OK) {
-        JsonDocument filter;
-        filter["ac"][0]["lat"] = true;
-        filter["ac"][0]["lon"] = true;
-        filter["ac"][0]["track"] = true;
-        filter["ac"][0]["true_heading"] = true;
-        filter["ac"][0]["gs"] = true;
-        filter["ac"][0]["flight"] = true;
-        filter["ac"][0]["t"] = true;
-        filter["ac"][0]["alt_baro"] = true;
-        filter["ac"][0]["baro_rate"] = true;
-        filter["ac"][0]["dbFlags"] = true;
-        filter["ac"][0]["squawk"] = true;
-        filter["ac"][0]["emergency"] = true;
+        if (SPIFFS.exists("/planes_tmp.json")) SPIFFS.remove("/planes_tmp.json");
+        File fPlanes = SPIFFS.open("/planes_tmp.json", "w");
+        if (fPlanes) {
+          http.writeToStream(&fPlanes);
+          fPlanes.flush();
+          size_t sz = fPlanes.position();
+          fPlanes.close();
 
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-        
-        http.end();
-        client.stop();
+          http.end();
+          client.stop();
 
-        if (err) {
-          Serial.printf("[ADS-B] JSON parse error (src %d): %s\n", attempt, err.c_str());
-        } else {
-          JsonArray acList = doc["ac"].as<JsonArray>();
+          if (sz > 0) {
+            File fIn = SPIFFS.open("/planes_tmp.json", "r");
+            if (fIn) {
+              JsonDocument filter;
+              filter["ac"][0]["lat"] = true;
+              filter["ac"][0]["lon"] = true;
+              filter["ac"][0]["track"] = true;
+              filter["ac"][0]["true_heading"] = true;
+              filter["ac"][0]["gs"] = true;
+              filter["ac"][0]["flight"] = true;
+              filter["ac"][0]["t"] = true;
+              filter["ac"][0]["alt_baro"] = true;
+              filter["ac"][0]["baro_rate"] = true;
+              filter["ac"][0]["dbFlags"] = true;
+              filter["ac"][0]["squawk"] = true;
+              filter["ac"][0]["emergency"] = true;
 
-          struct Cand {
-            float distKm;
-            uint16_t idx;
-            uint8_t prio;
-          };
+              JsonDocument doc;
+              DeserializationError err = deserializeJson(doc, fIn, DeserializationOption::Filter(filter));
+              fIn.close();
+              SPIFFS.remove("/planes_tmp.json");
 
-          Cand cands[64];
-          size_t candCount = 0;
-          float cosCenterLat = cosf(centerLat * DEG_TO_RAD);
+              if (err) {
+                Serial.printf("[ADS-B] JSON parse error (src %d, sz %u): %s\n", attempt, (unsigned int)sz, err.c_str());
+              } else {
+                JsonArray acList = doc["ac"].as<JsonArray>();
 
-          for (size_t i = 0; i < acList.size() && candCount < 64; i++) {
-            JsonObject plane = acList[i];
-            float lat = plane["lat"].as<float>();
-            float lon = plane["lon"].as<float>();
-            if (lat == 0.0f && lon == 0.0f) continue;
+                struct Cand {
+                  float distKm;
+                  uint16_t idx;
+                  uint8_t prio;
+                };
 
-            bool isGround = (plane["alt_baro"].is<const char*>() && strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0);
-            if (currentRadiusKm >= 100.0f && isGround) continue;
+                Cand cands[64];
+                size_t candCount = 0;
+                float cosCenterLat = cosf(centerLat * DEG_TO_RAD);
 
-            int dbFlags = plane["dbFlags"] | 0;
-            bool is_mil = (dbFlags & 1) != 0;
-            const char* sq = plane["squawk"] | "";
-            const char* emg = plane["emergency"] | "";
-            bool is_emg = (strcmp(sq, "7700") == 0 || strcmp(sq, "7600") == 0 || strcmp(sq, "7500") == 0 ||
-                           (emg[0] != '\0' && strcmp(emg, "none") != 0));
+                for (size_t i = 0; i < acList.size() && candCount < 64; i++) {
+                  JsonObject plane = acList[i];
+                  float lat = plane["lat"].as<float>();
+                  float lon = plane["lon"].as<float>();
+                  if (lat == 0.0f && lon == 0.0f) continue;
 
-            float dLatKm = (lat - centerLat) * 111.32f;
-            float dLonKm = (lon - centerLon) * (111.32f * cosCenterLat);
-            float distKm = sqrtf(dLatKm * dLatKm + dLonKm * dLonKm);
+                  bool isGround = (plane["alt_baro"].is<const char*>() && strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0);
+                  if (currentRadiusKm >= 100.0f && isGround) continue;
 
-            uint8_t prio = is_emg ? 0 : (is_mil ? 1 : 2);
-            cands[candCount++] = {distKm, (uint16_t)i, prio};
-          }
+                  int dbFlags = plane["dbFlags"] | 0;
+                  bool is_mil = (dbFlags & 1) != 0;
+                  const char* sq = plane["squawk"] | "";
+                  const char* emg = plane["emergency"] | "";
+                  bool is_emg = (strcmp(sq, "7700") == 0 || strcmp(sq, "7600") == 0 || strcmp(sq, "7500") == 0 ||
+                                 (emg[0] != '\0' && strcmp(emg, "none") != 0));
 
-          std::sort(cands, cands + candCount, [](const Cand& a, const Cand& b) {
-            if (a.prio != b.prio) return a.prio < b.prio;
-            return a.distKm < b.distKm;
-          });
+                  float dLatKm = (lat - centerLat) * 111.32f;
+                  float dLonKm = (lon - centerLon) * (111.32f * cosCenterLat);
+                  float distKm = sqrtf(dLatKm * dLatKm + dLonKm * dLonKm);
 
-          size_t count = 0;
-          for (size_t k = 0; k < candCount && count < MAX_AIRCRAFT; k++) {
-            JsonObject plane = acList[cands[k].idx];
-            AircraftData& ac = aircraftList[count++];
+                  uint8_t prio = is_emg ? 0 : (is_mil ? 1 : 2);
+                  cands[candCount++] = {distKm, (uint16_t)i, prio};
+                }
 
-            ac.lat = plane["lat"].as<float>();
-            ac.lon = plane["lon"].as<float>();
-            ac.track = plane["track"] | 0.0f;
-            ac.nose_deg = plane["true_heading"] | ac.track;
-            ac.gs_knots = plane["gs"] | 0.0f;
-            ac.vrate_fpm = plane["baro_rate"] | 0.0f;
+                std::sort(cands, cands + candCount, [](const Cand& a, const Cand& b) {
+                  if (a.prio != b.prio) return a.prio < b.prio;
+                  return a.distKm < b.distKm;
+                });
 
-            int dbFlags = plane["dbFlags"] | 0;
-            ac.is_mil = (dbFlags & 1) != 0;
+                size_t count = 0;
+                for (size_t k = 0; k < candCount && count < MAX_AIRCRAFT; k++) {
+                  JsonObject plane = acList[cands[k].idx];
+                  AircraftData& ac = aircraftList[count++];
 
-            const char* sq = plane["squawk"] | "";
-            strlcpy(ac.squawk, sq, sizeof(ac.squawk));
-            const char* emg = plane["emergency"] | "";
-            ac.is_emergency = (strcmp(ac.squawk, "7700") == 0 || strcmp(ac.squawk, "7600") == 0 || strcmp(ac.squawk, "7500") == 0 ||
-                               (emg[0] != '\0' && strcmp(emg, "none") != 0));
+                  ac.lat = plane["lat"].as<float>();
+                  ac.lon = plane["lon"].as<float>();
+                  ac.track = plane["track"] | 0.0f;
+                  ac.nose_deg = plane["true_heading"] | ac.track;
+                  ac.gs_knots = plane["gs"] | 0.0f;
+                  ac.vrate_fpm = plane["baro_rate"] | 0.0f;
 
-            const char* fl = plane["flight"] | "";
-            strlcpy(ac.callsign, fl, sizeof(ac.callsign));
-            size_t csLen = strlen(ac.callsign);
-            while (csLen > 0 && ac.callsign[csLen - 1] == ' ') {
-              ac.callsign[--csLen] = '\0';
-            }
-            if (ac.callsign[0] == '\0') strlcpy(ac.callsign, "NOCALL", sizeof(ac.callsign));
+                  int dbFlags = plane["dbFlags"] | 0;
+                  ac.is_mil = (dbFlags & 1) != 0;
 
-            const char* typeStr = plane["t"] | "";
-            strlcpy(ac.type, typeStr, sizeof(ac.type));
+                  const char* sq = plane["squawk"] | "";
+                  strlcpy(ac.squawk, sq, sizeof(ac.squawk));
+                  const char* emg = plane["emergency"] | "";
+                  ac.is_emergency = (strcmp(ac.squawk, "7700") == 0 || strcmp(ac.squawk, "7600") == 0 || strcmp(ac.squawk, "7500") == 0 ||
+                                     (emg[0] != '\0' && strcmp(emg, "none") != 0));
 
-            if (plane["alt_baro"].is<const char*>() && strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0) {
-              strlcpy(ac.alt, "GND", sizeof(ac.alt));
-            } else {
-              float altFeet = plane["alt_baro"] | 0.0f;
-              int altMeters = (int)(altFeet * 0.3048f);
-              snprintf(ac.alt, sizeof(ac.alt), "%dm", altMeters);
-            }
+                  const char* fl = plane["flight"] | "";
+                  strlcpy(ac.callsign, fl, sizeof(ac.callsign));
+                  size_t csLen = strlen(ac.callsign);
+                  while (csLen > 0 && ac.callsign[csLen - 1] == ' ') {
+                    ac.callsign[--csLen] = '\0';
+                  }
+                  if (ac.callsign[0] == '\0') strlcpy(ac.callsign, "NOCALL", sizeof(ac.callsign));
 
-            ac.route[0] = '\0';
-            if (strcmp(ac.callsign, "NOCALL") != 0 && !ac.is_mil) {
-              const char* cached = routeCacheFind(ac.callsign);
-              if (cached != nullptr) {
-                strlcpy(ac.route, cached, sizeof(ac.route));
+                  const char* typeStr = plane["t"] | "";
+                  strlcpy(ac.type, typeStr, sizeof(ac.type));
+
+                  if (plane["alt_baro"].is<const char*>() && strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0) {
+                    strlcpy(ac.alt, "GND", sizeof(ac.alt));
+                  } else {
+                    float altFeet = plane["alt_baro"] | 0.0f;
+                    int altMeters = (int)(altFeet * 0.3048f);
+                    snprintf(ac.alt, sizeof(ac.alt), "%dm", altMeters);
+                  }
+
+                  ac.route[0] = '\0';
+                  if (strcmp(ac.callsign, "NOCALL") != 0 && !ac.is_mil) {
+                    const char* cached = routeCacheFind(ac.callsign);
+                    if (cached != nullptr) {
+                      strlcpy(ac.route, cached, sizeof(ac.route));
+                    }
+                  }
+                }
+
+                aircraftCount = count;
+                lastPlaneFetchFixMs = millis();
+                parseSuccess = true;
+
+                int routesFetched = 0;
+                for (size_t i = 0; i < aircraftCount && routesFetched < 2; i++) {
+                  if (aircraftList[i].route[0] == '\0' && strcmp(aircraftList[i].callsign, "NOCALL") != 0 && !aircraftList[i].is_mil) {
+                    fetchRouteForCallsign(aircraftList[i].callsign, aircraftList[i].route, sizeof(aircraftList[i].route));
+                    routesFetched++;
+                  }
+                }
+
+                Serial.printf("[ADS-B] Parsed %u aircraft from API (selected: %u priority/closest, Free RAM: %u B)\n", 
+                              (unsigned int)acList.size(), (unsigned int)count, (unsigned int)ESP.getFreeHeap());
               }
             }
           }
-
-          aircraftCount = count;
-          lastPlaneFetchFixMs = millis();
-          parseSuccess = true;
-
-          int routesFetched = 0;
-          for (size_t i = 0; i < aircraftCount && routesFetched < 2; i++) {
-            if (aircraftList[i].route[0] == '\0' && strcmp(aircraftList[i].callsign, "NOCALL") != 0 && !aircraftList[i].is_mil) {
-              fetchRouteForCallsign(aircraftList[i].callsign, aircraftList[i].route, sizeof(aircraftList[i].route));
-              routesFetched++;
-            }
-          }
-
-          Serial.printf("[ADS-B] Parsed %u aircraft from API (selected: %u priority/closest, Free RAM: %u B)\n", 
-                        (unsigned int)acList.size(), (unsigned int)count, (unsigned int)ESP.getFreeHeap());
         }
       } else {
         Serial.printf("[ADS-B] HTTP error: %d (src %d)\n", httpCode, attempt);
