@@ -3185,6 +3185,9 @@ void setup() {
     }
   } else {
     Serial.println("[SPIFFS] SPIFFS mounted successfully.");
+    if (SPIFFS.exists(RADAR_RAW_CACHE_FILE)) {
+      radarRawCacheValid = true;
+    }
   }
   connectWiFi();
   setupWebServer();
@@ -3198,9 +3201,7 @@ void setup() {
 
   fetchWindData();
   downloadLatestRadar();
-  if (currentMode != MODE_WEATHER) {
-    fetchPlanesData();
-  }
+  fetchPlanesData();
   renderScreen();
   
   lastWeatherUpdateMs = millis();
@@ -3242,37 +3243,28 @@ void loop() {
     }
   }
 
-  // Periodic data updates
-  if (currentMode == MODE_COMBINED) {
-    uint32_t weatherInt = (radarTimestamp == 0 || !SPIFFS.exists(RADAR_FILE)) ? 15000 : UPDATE_INTERVAL_MS;
+  // Periodic radar updates (every 5 min or 15s initial)
+  uint32_t weatherInt = (radarTimestamp == 0 || !radarRawCacheValid || !SPIFFS.exists(RADAR_RAW_CACHE_FILE)) ? 15000 : UPDATE_INTERVAL_MS;
+  if (currentMode == MODE_COMBINED || currentMode == MODE_WEATHER) {
     if (now - lastWeatherUpdateMs >= weatherInt) {
       lastWeatherUpdateMs = now;
       if (downloadLatestRadar()) renderScreen();
     }
-    if (now - lastPlaneFetchMs >= PLANE_FETCH_INTERVAL_MS) {
-      lastPlaneFetchMs = now;
-      fetchPlanesData();
-    }
-    if (now - lastPlaneRedrawMs >= PLANE_REDRAW_INTERVAL_MS) {
-      lastPlaneRedrawMs = now;
-      renderScreen();
-    }
-  } else if (currentMode == MODE_WEATHER) {
-    uint32_t interval = (radarTimestamp == 0 || !SPIFFS.exists(RADAR_FILE)) ? 15000 : UPDATE_INTERVAL_MS;
-    if (now - lastWeatherUpdateMs >= interval) {
-      lastWeatherUpdateMs = now;
-      if (downloadLatestRadar()) renderScreen();
-    }
-  } else if (currentMode == MODE_PLANES) {
-    if (now - lastPlaneFetchMs >= PLANE_FETCH_INTERVAL_MS) {
-      lastPlaneFetchMs = now;
-      fetchPlanesData();
-    }
+  }
+
+  // Periodic aircraft fetches (every 30s)
+  if (now - lastPlaneFetchMs >= PLANE_FETCH_INTERVAL_MS) {
+    lastPlaneFetchMs = now;
+    fetchPlanesData();
+  }
+
+  // Fast plane position redraw (1 FPS)
+  if (currentMode == MODE_COMBINED || currentMode == MODE_PLANES) {
     if (now - lastPlaneRedrawMs >= PLANE_REDRAW_INTERVAL_MS) {
       lastPlaneRedrawMs = now;
       renderScreen();
     }
   }
-  
+
   delay(10);
 }
