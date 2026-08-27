@@ -1460,8 +1460,12 @@ void handleApiSet() {
 
 void handleApiSave() {
   if (server.hasArg("lat") && server.hasArg("lon")) {
-    centerLat = server.arg("lat").toFloat();
-    centerLon = server.arg("lon").toFloat();
+    float newLat = server.arg("lat").toFloat();
+    float newLon = server.arg("lon").toFloat();
+    bool locChanged = (fabsf(newLat - centerLat) > 0.0001f || fabsf(newLon - centerLon) > 0.0001f);
+    centerLat = newLat;
+    centerLon = newLon;
+
     if (server.hasArg("city_name")) {
       homeCityName = server.arg("city_name");
       homeCityName.trim();
@@ -1483,9 +1487,17 @@ void handleApiSave() {
     prefs.putInt("alert_sens", rainAlertMinPixels);
     prefs.end();
 
+    if (locChanged) {
+      radarRawCacheValid = false;
+      radarTimestamp = 0;
+      SPIFFS.remove(RADAR_RAW_CACHE_FILE);
+    }
+
     configTime(timeOffsetHours * 3600, 0, "pool.ntp.org", "time.nist.gov");
     fetchWindData();
     
+    releaseCanvas();
+
     if (currentMode == MODE_WEATHER || currentMode == MODE_COMBINED) {
       downloadLatestRadar();
     }
