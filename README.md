@@ -10,64 +10,65 @@
 </p>
 
 <p align="center">
-  <b>Univerzálny celosvetový stolný radar pre okrúhly 1.28″ LCD displej spájajúci globálny zrážkový meteoradar (RainViewer API) a živé sledovanie lietadiel (ADS-B) s taktickým sektorovým lúčom, detekciou vetra, webovým panelom a plynulou animáciou bez blikania.</b>
+  <b>A universal, worldwide desktop radar for the 1.28″ GC9A01 round LCD display combining global precipitation weather radar (RainViewer API) and live aircraft tracking (ADS-B) with tactical threat sector beam, wind vector analysis, embedded web dashboard, and flicker-free animation.</b>
 </p>
 
 ---
 
-## 🌟 Prehľad projektu
+## 🌟 Project Overview
 
-Tento open-source projekt transformuje miniatúrnu vývojovú dosku **ESP32-C3 SuperMini** a okrúhly **1.28″ TFT displej GC9A01 (240×240 px)** na celosvetovo použiteľný taktický radar. Funguje na **ľubovoľných GPS súradniciach na Zemi** (Európa, Severná a Južná Amerika, Ázia, Afrika, Austrália).
+This open-source DIY project transforms an ultra-compact **ESP32-C3 SuperMini** board and a round **1.28″ GC9A01 TFT display (240×240 px)** into a worldwide tactical radar station. It operates on **any GPS coordinates on Earth** (Europe, Americas, Asia, Africa, Australia).
 
-Zariadenie v nastaviteľnom časovom intervale (alebo po kliknutí tlačidla) prepína:
-1. **🌍 Globálny zrážkový meteoradar (RainViewer):** Sťahuje a dekóduje celosvetové dlaždice zrážok (Web Mercator Slippy Map $256 \times 256\text{ px}$) a vykresľuje ich na vektorovej mape sveta.
-2. **✈️ Globálny ADS-B letecký radar:** Monitoruje lietadlá v okolí v reálnom čase s extrapoláciou polohy (`Dead Reckoning`), trasami letísk (**ODKIAĽ > KAM**) a prioritnou núdzovou izoláciou (**Squawk 7700 / 7600 / 7500**).
-3. **🛰️ Tactical ATC Kombinovaný režim:** Zobrazuje zrážkovú oblačnosť a lietadlá súčasne na jednej taktickej obrazovke.
-
----
-
-## 🚀 Kľúčové funkcie
-
-* 🌍 **Celosvetové pokrytie (RainViewer Global API):**
-  - Web Mercator Slippy Map dlaždicová projekcia pre akékoľvek GPS súradnice na planéte.
-  - Rýchly streamovaný dekompresor a pamäťovo optimalizovaný 4-chunkový buffer.
-  - Vektorové hranice štátov sveta ([include/world_borders.h](include/world_borders.h)) vykresľované v reálnom čase.
-* 🧭 **Taktický radarový lúč (Threat Sector Beam) & Detekcia vetra (Open-Meteo 700 hPa):**
-  - **Červený pulzujúci lúč (INCOMING):** Zameriava búrky v nátokovom kuželi výškového vetra ($\pm 60^\circ$ proti vetru) s výstrahou napr. `! INCOMING: 8.5 km JZ !`.
-  - **Žltý taktický lúč (STORM):** Signalizuje zrážky v bezprostrednom okruhu s textom `! STORM: 8.5 km JZ !`.
-  - **Prvky sektora:** $36^\circ$ taktický lúč, zameriavací cieľový oblúk na presnej vzdialenosti mraku, terčík a obvodový smerový ševrón ($\blacktriangledown$).
-  - **Blesková SPIFFS Raw Cache:** Dekompresia prebieha iba 1× pri stiahnutí novej snímky (20 FPS plynulé pulzovanie).
-* 🚨 **Exkluzívna izolácia núdzových letov (Emergency Focus):**
-  - Pri zachytení núdzového letu (**Squawk 7700 / 7600 / 7500** alebo ADS-B discrete flag) sa **všetky bežné lietadlá okamžite skryjú**.
-  - Na displeji zostáva iba núdzový let s blikajúcim výstražným orámovaním, trvalým štítkom a horným bannerom `⚠️ NUDZA: CALLSIGN (SQ7700)`.
-* 🛡️ **Zero-Flicker Double Buffering & TLS izolácia:**
-  - 100 % plynulá animácia letu lietadiel (1 Hz `Dead Reckoning`) bez akéhokoľvek blikania displeja.
-* 🏷️ **HUD Contrast Boxy & Vyhľadávanie letových trás:**
-  - Polopriehľadné zaoblené boxy s vysokým kontrastom nad zrážkovými jadrami.
-  - Preklad volacieho znaku na letiskové trasy (napr. `VIE>AMS`, `JFK>LHR`, `HND>ITM`) s lokálnou cache pamäťou.
-* 🌅 **Astronomický Nočný režim (Auto-Dimming):**
-  - Automatický výpočet východu a západu slnka podľa GPS súradníc a dňa v roku s jemným stlmením jasu.
-* 🔘 **Multi-Click Tlačidlo (GPIO9):**
-  - **1x Klik:** Zmena zoomu ($10 \rightarrow 25 \rightarrow 50 \rightarrow 100 \rightarrow 250\text{ km}$).
-  - **2x Klik:** Okamžité prepnutie režimu (Kombinovaný $\rightarrow$ Počasie $\rightarrow$ Lietadlá).
-  - **Dlhé podržanie (3s):** Továrenský reset WiFi a NVS pamäte.
-* 🌐 **Lokálny Web Dashboard (Port 80):**
-  - Živá mapa Leaflet.js, telemetria čipu, GPS nastavenie polohy prehliadačom a 1-kliknutím OTA aktualizácia priamo z GitHubu.
+The device alternates or switches between three primary modes via automatic carousel or button clicks:
+1. **🌍 Global Weather Radar (RainViewer):** Downloads and decodes worldwide precipitation tiles (Web Mercator Slippy Map $256 \times 256\text{ px}$) rendered over real-time international border vector maps.
+2. **✈️ Global ADS-B Aircraft Tracker:** Tracks surrounding flights in real time with continuous position extrapolation (`Dead Reckoning`), airport route lookup (**FROM > TO**), and priority emergency isolation (**Squawk 7700 / 7600 / 7500**).
+3. **🛰️ Tactical ATC Combined Radar:** Displays both precipitation clouds and aircraft simultaneously on a single unified tactical screen.
 
 ---
 
-## 🛠️ Hardvér a schéma zapojenia
+## 🚀 Key Features
 
-| Komponent | Popis |
+* 🌍 **Worldwide Weather Coverage (RainViewer Global API):**
+  - Web Mercator Slippy Map tile projection for any GPS coordinates on the globe.
+  - High-speed streaming decompressor with memory-optimized 4-chunk RAM buffering.
+  - Vector world border polygons ([include/world_borders.h](include/world_borders.h)) rendered in real time.
+* 🧭 **Tactical Threat Sector Beam & Wind Vector Tracking (Open-Meteo 700 hPa):**
+  - **Red Pulsating Beam (INCOMING):** Targets incoming storms within the upper-level wind inflow cone ($\pm 60^\circ$ upwind) with alerts such as `! INCOMING: 8.5 km SW !`.
+  - **Yellow Tactical Beam (STORM):** Alerts to precipitation within the immediate proximity circle with text `! STORM: 8.5 km SW !`.
+  - **Visual Elements:** $36^\circ$ tactical beam, range arc matching the cloud's distance, laser tracer, target reticle, and outer directional chevron ($\blacktriangledown$).
+  - **Blazing Fast SPIFFS Raw Cache:** Decompression occurs once per new radar frame, enabling smooth 20 FPS pulsing animations.
+* 🚨 **Exclusive Emergency Flight Focus (Emergency Isolation):**
+  - When an aircraft signals an emergency (**Squawk 7700 / 7600 / 7500** or discrete ADS-B flag), **all non-emergency aircraft are instantly hidden**.
+  - Only the emergency flight is displayed with a flashing warning outline, persistent HUD tag, and top alert banner `⚠️ EMERGENCY: CALLSIGN (SQ7700)`.
+  - Once the emergency clears or leaves the range, normal traffic display resumes automatically.
+* 🛡️ **Zero-Flicker Double Buffering & TLS Isolation:**
+  - 100% flicker-free smooth aircraft motion (1 Hz `Dead Reckoning`) with zero display tearing.
+* 🏷️ **HUD Contrast Boxes & Route Lookup:**
+  - Translucent rounded boxes ensure 100% legibility over colorful radar storm cores.
+  - Automatic callsign-to-airport-route translation (e.g. `VIE>AMS`, `JFK>LHR`, `HND>ITM`) with local RAM cache.
+* 🌅 **Astronomical Night Mode (Auto-Dimming):**
+  - Automatic sunset/sunrise calculation from GPS coordinates and day of year with automatic backlight dimming.
+* 🔘 **Multi-Click Hardware Button (GPIO9):**
+  - **Single Click:** Cycle scale ($10 \rightarrow 25 \rightarrow 50 \rightarrow 100 \rightarrow 250\text{ km}$).
+  - **Double Click:** Switch mode (Combined $\rightarrow$ Weather Only $\rightarrow$ Aircraft Only).
+  - **Long Press (3s):** Factory reset WiFi and NVS memory.
+* 🌐 **Embedded Web Dashboard (Port 80):**
+  - Interactive Leaflet.js map with live aircraft, hardware telemetry, browser GPS location setting, and 1-click OTA firmware updates directly from GitHub.
+
+---
+
+## 🛠️ Hardware & Wiring Diagram
+
+| Component | Description |
 | :--- | :--- |
-| **ESP32-C3 SuperMini** | Riadiaci mikrokontrolér (RISC-V 160MHz, Wi-Fi 2.4GHz, USB-C) |
-| **GC9A01 1.28″ Round LCD** | Okrúhly 240×240 px IPS farebný displej (SPI) |
-| **Tlačidlo (BOOT / GPIO9)** | Ovládanie zoomu, režimov a resetu (interný pull-up) |
+| **ESP32-C3 SuperMini** | Main MCU (RISC-V 160MHz, Wi-Fi 2.4GHz, USB-C) |
+| **GC9A01 1.28″ Round LCD** | 240×240 px IPS full-color display (SPI) |
+| **Button (BOOT / GPIO9)** | Multi-function button for zoom, modes, and reset |
 
 ```
    ESP32-C3 SuperMini                  GC9A01 LCD (240x240)
  +--------------------+               +--------------------+
- |               3.3V |-------------->| VCC & BLK (Podsv.) |
+ |               3.3V |-------------->| VCC & BLK (B-Light)|
  |                GND |-------------->| GND                |
  |              GPIO4 |-------------->| SCL / SCLK (Clock) |
  |              GPIO3 |-------------->| SDA / MOSI (Data)  |
@@ -79,34 +80,47 @@ Zariadenie v nastaviteľnom časovom intervale (alebo po kliknutí tlačidla) pr
 
 ---
 
-## 🚀 Rýchly štart v 3 krokoch
+## 🚀 Quick Start in 3 Steps
 
-### 1. Nahratie firmvéru (Web Flash cez prehliadač)
-1. Otvorte **[web.esphome.io](https://web.esphome.io/)** v prehliadači Chrome / Edge.
-2. Pripojte ESP32-C3 cez USB kábel k počítaču a kliknite na **CONNECT**.
-3. Zvoľte **Install** a vyberte stiahnutý súbor [`merged-firmware.bin`](merged-firmware.bin).
-4. Po dokončení stlačte tlačidlo **RST** na doske.
+### 1. Flash Firmware (Web Flasher via USB)
+1. Open **[web.esphome.io](https://web.esphome.io/)** in Chrome, Edge, or Opera.
+2. Connect your ESP32-C3 to your computer via USB-C and click **CONNECT**.
+3. Click **Install** and select the downloaded [`merged-firmware.bin`](merged-firmware.bin) file.
+4. Once completed, press the **RST** button on the ESP32 board.
 
-### 2. Pripojenie k Wi-Fi a nastavenie polohy (WiFiManager)
-1. Po prvom štarte sa pripojte k Wi-Fi sieti **`ESPGlobalRadar`** (alebo `ESPMeteoRadar`).
-2. V otvorenom prehliadači (`http://192.168.4.1`) zadajte:
-   - Názov a heslo domácej Wi-Fi siete.
-   - **GPS súradnice** vašej lokality (Latitude & Longitude).
-   - Predvolený rozsah (napr. `50` km) a časový posun (UTC offset).
-3. Kliknite na **Save**. Doska sa pripojí na internet a okamžite spustí radar.
+### 2. Connect Wi-Fi & Set Location (WiFiManager)
+1. On initial boot, connect to the temporary Wi-Fi network: **`ESP-GlobalRadar-Setup`**.
+2. In the captive portal (`http://192.168.4.1`):
+   - Enter your home Wi-Fi SSID and password.
+   - Enter your **GPS Coordinates** (Latitude & Longitude).
+   - Set Default Range (e.g. `50` km) and Timezone UTC offset.
+3. Click **Save**. The board will connect to Wi-Fi and load live radar data.
 
-### 3. Používanie a Web Dashboard
-- Otvorte v sieti **`http://espglobalradar.local`** (alebo IP adresu dosky) pre prístup k interaktívnemu panelu, telemetrii a OTA aktualizáciám.
+### 3. Web Dashboard & Operation
+- Access **`http://espglobalradar.local`** (or the device's IP address) from any browser on your local network to view telemetry, interactive map, and settings.
 
 ---
 
-## 📄 Licencia & Poďakovanie
+## 📦 How to Build from Source (PlatformIO)
 
-Tento projekt je zverejnený pod slobodnou licenciou **[MIT License](LICENSE)**.
+```bash
+# Clone the repository
+git clone https://github.com/hackra76/ESP-GlobalRadar.git
+cd ESP-GlobalRadar
 
-Stavia na otvorených dátach a projektoch:
-- 🌧️ **[RainViewer API](https://www.rainviewer.com/api.html):** Globálne meteorologické radarové dlaždice.
-- 📡 **[ADSB.fi](https://opendata.adsb.fi/):** Komunitný otvorený feed ADS-B leteckých dát.
-- 🌤️ **[Open-Meteo API](https://open-meteo.com/):** Globálne výškové a prízemné veterné dáta.
-- 🗺️ **[vrs-standing-data (adsb.lol)](https://vrs-standing-data.adsb.lol/):** Databáza letových trás pre lietadlá.
-- 🖨️ **[3D Case Model (MakerWorld)](https://makerworld.com/cs/models/2872376-esp32-plane-radar-live-ads-b-on-a-round-display):** 3D model krabičky pre okrúhly displej.
+# Build and flash via PlatformIO CLI
+pio run -t upload
+```
+
+---
+
+## 📄 License & Credits
+
+Released under the **[MIT License](LICENSE)**.
+
+Built upon open data feeds and community resources:
+- 🌧️ **[RainViewer API](https://www.rainviewer.com/api.html):** Global precipitation weather radar tiles.
+- 📡 **[ADSB.fi](https://opendata.adsb.fi/):** Community-driven open ADS-B flight tracking data.
+- 🌤️ **[Open-Meteo API](https://open-meteo.com/):** Free global wind vector and weather forecast API.
+- 🗺️ **[vrs-standing-data (adsb.lol)](https://vrs-standing-data.adsb.lol/):** Aircraft route database.
+- 🖨️ **[3D Case Model (MakerWorld)](https://makerworld.com/cs/models/2872376-esp32-plane-radar-live-ads-b-on-a-round-display):** 3D printable case for the 1.28″ round LCD.

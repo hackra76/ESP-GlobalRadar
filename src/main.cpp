@@ -2636,9 +2636,9 @@ void drawPlanesOverlay(LovyanGFX& target) {
     }
   }
 
-  // Samotné vykreslenie symbolov, štítkov a okrajových indikátorov
+  // Render symbols, tags, and edge indicators
   for (size_t i = 0; i < aircraftCount; i++) {
-    // V prípade núdze skryjeme všetky ostatné bežné lety pre maximálny taktický prehľad
+    // In emergency mode, hide all non-emergency aircraft for tactical clarity
     if (hasEmergency && !planes[i].ac.is_emergency) {
       continue;
     }
@@ -2653,13 +2653,13 @@ void drawPlanesOverlay(LovyanGFX& target) {
     }
   }
 
-  // Zobrazenie núdzového výstražného bannera pri Squawk 7700/7600/7500
+  // Display emergency alert banner for Squawk 7700/7600/7500 / discrete emergency flag
   if (hasEmergency) {
     target.setTextSize(0.80f);
     target.setTextDatum(textdatum_t::top_center);
     uint16_t emgCol = (millis() % 600 < 300) ? target.color565(255, 30, 30) : target.color565(255, 255, 0);
     target.setTextColor(emgCol, TFT_BLACK);
-    target.drawString("⚠️ NUDZA: " + emgInfo, cx, 38);
+    target.drawString("⚠️ EMERGENCY: " + emgInfo, cx, 38);
   }
 }
 
