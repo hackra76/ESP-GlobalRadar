@@ -1896,9 +1896,64 @@ bool downloadLatestRadar() {
   int min_ty = (int)floorf((center_world_y - radius_world_px) / 256.0f);
   int max_ty = (int)floorf((center_world_y + radius_world_px) / 256.0f);
 
+  struct DownloadedTile {
+    int tx, ty;
+    char path[24];
+    bool valid;
+  };
+  DownloadedTile dlTiles[4];
+  int tileCount = 0;
+
+  // Phase 1: Download tiles via HTTPS into SPIFFS (radarGrid is NOT yet allocated -> 130 kB free RAM for TLS)
+  for (int ty = min_ty; ty <= max_ty; ty++) {
+    for (int tx = min_tx; tx <= max_tx; tx++) {
+      if (tileCount >= 4) break;
+      snprintf(dlTiles[tileCount].path, sizeof(dlTiles[tileCount].path), "/tile_%d.png", tileCount);
+      dlTiles[tileCount].tx = tx;
+      dlTiles[tileCount].ty = ty;
+      dlTiles[tileCount].valid = false;
+
+      String tileUrl = rainViewerHost + radarPath + "/256/" + String(z) + "/" + String(tx) + "/" + String(ty) + "/" + String(RAINVIEWER_COLOR_SCHEME) + "/1_1.png";
+      Serial.printf("[RADAR] Downloading tile (%d, %d, z=%d): %s\n", tx, ty, z, tileUrl.c_str());
+
+      WiFiClientSecure clientImg;
+      clientImg.setInsecure();
+      clientImg.setHandshakeTimeout(10000);
+      HTTPClient httpImg;
+      httpImg.setTimeout(18000);
+      httpImg.setUserAgent("ESP-GlobalRadar/2.0");
+
+      if (httpImg.begin(clientImg, tileUrl)) {
+        int imgCode = httpImg.GET();
+        if (imgCode == HTTP_CODE_OK) {
+          if (SPIFFS.exists(dlTiles[tileCount].path)) SPIFFS.remove(dlTiles[tileCount].path);
+          File f = SPIFFS.open(dlTiles[tileCount].path, "w");
+          if (f) {
+            httpImg.writeToStream(&f);
+            f.flush();
+            size_t sz = f.position();
+            f.close();
+            if (sz > 0) {
+              dlTiles[tileCount].valid = true;
+            }
+          }
+        } else {
+          Serial.printf("[RADAR] HTTP error %d on tile (%d, %d)\n", imgCode, tx, ty);
+        }
+        httpImg.end();
+        clientImg.stop();
+      }
+      tileCount++;
+    }
+  }
+
+  // Phase 2: Decode all tiles into radarGrid (TLS is closed and freed -> safe 58 kB grid allocation)
   uint8_t* radarGrid = (uint8_t*)malloc(TFT_W * TFT_H);
   if (!radarGrid) {
     Serial.println("[RADAR] Error: Out of memory for radar grid buffer!");
+    for (int i = 0; i < tileCount; i++) {
+      if (SPIFFS.exists(dlTiles[i].path)) SPIFFS.remove(dlTiles[i].path);
+    }
     ensureCanvas();
     return false;
   }
@@ -1909,49 +1964,18 @@ bool downloadLatestRadar() {
   curDecodingCenterY = center_world_y;
   curDecodingScale = tile_scale;
 
-  int tilesDownloaded = 0;
-  String tileHost = rainViewerHost;
-  if (tileHost.startsWith("https://")) {
-    tileHost = "http://" + tileHost.substring(8);
-  }
+  int decodedTilesCount = 0;
+  for (int i = 0; i < tileCount; i++) {
+    if (dlTiles[i].valid && SPIFFS.exists(dlTiles[i].path)) {
+      curDecodingTx = dlTiles[i].tx;
+      curDecodingTy = dlTiles[i].ty;
 
-  for (int ty = min_ty; ty <= max_ty; ty++) {
-    for (int tx = min_tx; tx <= max_tx; tx++) {
-      curDecodingTx = tx;
-      curDecodingTy = ty;
-
-      String tileUrl = tileHost + radarPath + "/256/" + String(z) + "/" + String(tx) + "/" + String(ty) + "/" + String(RAINVIEWER_COLOR_SCHEME) + "/1_1.png";
-      Serial.printf("[RADAR] Downloading tile (%d, %d, z=%d): %s\n", tx, ty, z, tileUrl.c_str());
-
-      WiFiClient clientImg;
-      HTTPClient httpImg;
-      httpImg.setTimeout(8000);
-      httpImg.setUserAgent("ESP-GlobalRadar/2.0");
-
-      if (httpImg.begin(clientImg, tileUrl)) {
-        int imgCode = httpImg.GET();
-        if (imgCode == HTTP_CODE_OK) {
-          if (SPIFFS.exists(RADAR_FILE)) SPIFFS.remove(RADAR_FILE);
-          File f = SPIFFS.open(RADAR_FILE, "w");
-          if (f) {
-            httpImg.writeToStream(&f);
-            f.flush();
-            size_t sz = f.position();
-            f.close();
-            if (sz > 0) {
-              if (png.open(RADAR_FILE, pngOpen, pngClose, pngRead, pngSeek, drawPngLine) == PNG_SUCCESS) {
-                png.decode(nullptr, 0);
-                png.close();
-                tilesDownloaded++;
-              }
-            }
-          }
-        } else {
-          Serial.printf("[RADAR] HTTP error %d on tile (%d, %d)\n", imgCode, tx, ty);
-        }
-        httpImg.end();
-        clientImg.stop();
+      if (png.open(dlTiles[i].path, pngOpen, pngClose, pngRead, pngSeek, drawPngLine) == PNG_SUCCESS) {
+        png.decode(nullptr, 0);
+        png.close();
+        decodedTilesCount++;
       }
+      SPIFFS.remove(dlTiles[i].path);
     }
   }
 
@@ -2025,7 +2049,7 @@ bool downloadLatestRadar() {
 
   int totalFoundPixels = alertAnyPixelCount + alertIncomingPixelCount;
   Serial.printf("[RADAR] Decoded precipitation pixels in range: %d (Any: %d, Incoming: %d, radius: %.0f km, tiles: %d)\n", 
-                totalFoundPixels, alertAnyPixelCount, alertIncomingPixelCount, currentRadiusKm, tilesDownloaded);
+                totalFoundPixels, alertAnyPixelCount, alertIncomingPixelCount, currentRadiusKm, decodedTilesCount);
 
   if (rainAlertThresholdKm > 0.0f && alertIncomingPixelCount >= rainAlertMinPixels && alertIncomingMinSqPx <= 14400.0f) {
     rainAlertActive = true;
@@ -2059,7 +2083,7 @@ bool downloadLatestRadar() {
   }
 
   ensureCanvas();
-  return (tilesDownloaded > 0);
+  return (decodedTilesCount > 0);
 }
 
 void decodeRadarImage() {
