@@ -1727,7 +1727,7 @@ void setupWebServer() {
 // 5. RAINVIEWER GLOBAL WEATHER RADAR (MULTI-TILE FETCH & RESAMPLING)
 // =======================================================================================
 
-static uint8_t* curDecodingGrid = nullptr;
+static uint8_t* curGridChunks[4] = {nullptr, nullptr, nullptr, nullptr};
 static int curDecodingTx = 0;
 static int curDecodingTy = 0;
 static float curDecodingCenterX = 0.0f;
@@ -1755,13 +1755,19 @@ int32_t pngSeek(PNGFILE* handle, int32_t position) {
 
 int drawPngLine(PNGDRAW* pDraw) {
   int ty = pDraw->y;
-  if (ty < 0 || ty >= RADAR_TILE_SIZE || !curDecodingGrid) return 1;
+  if (ty < 0 || ty >= RADAR_TILE_SIZE) return 1;
 
   uint8_t* p = (uint8_t*)pDraw->pPixels;
   float world_y = (float)(curDecodingTy * 256 + ty);
   float d_world_y = world_y - curDecodingCenterY;
   int sy = (int)roundf(120.0f + d_world_y * curDecodingScale);
   if (sy < 0 || sy >= TFT_H) return 1;
+
+  int chunkIdx = sy / 60;
+  int rowInChunk = sy % 60;
+  uint8_t* chunkPtr = curGridChunks[chunkIdx];
+  if (!chunkPtr) return 1;
+  uint8_t* rowDst = chunkPtr + rowInChunk * TFT_W;
 
   float dY_px = (float)sy - 120.0f;
   float dY_sq = dY_px * dY_px;
@@ -1805,7 +1811,7 @@ int drawPngLine(PNGDRAW* pDraw) {
     uint8_t col8 = (uint8_t)(((r & 0xE0)) | ((g & 0xE0) >> 3) | ((b & 0xC0) >> 6));
     if (col8 == 0x00) col8 = 0x04;
 
-    curDecodingGrid[sy * TFT_W + sx] = col8;
+    rowDst[sx] = col8;
   }
   return 1;
 }
@@ -1947,19 +1953,26 @@ bool downloadLatestRadar() {
     }
   }
 
-  // Phase 2: Decode all tiles into radarGrid (TLS is closed and freed -> safe 58 kB grid allocation)
-  uint8_t* radarGrid = (uint8_t*)malloc(TFT_W * TFT_H);
-  if (!radarGrid) {
-    Serial.println("[RADAR] Error: Out of memory for radar grid buffer!");
+  // Phase 2: Decode all tiles into 4 small 14 kB chunk buffers (never fails on fragmented heap)
+  bool allocOk = true;
+  for (int i = 0; i < 4; i++) {
+    curGridChunks[i] = (uint8_t*)malloc(60 * TFT_W);
+    if (!curGridChunks[i]) allocOk = false;
+    else memset(curGridChunks[i], 0, 60 * TFT_W);
+  }
+
+  if (!allocOk) {
+    Serial.println("[RADAR] Error: Out of memory for radar grid chunks!");
+    for (int i = 0; i < 4; i++) {
+      if (curGridChunks[i]) { free(curGridChunks[i]); curGridChunks[i] = nullptr; }
+    }
     for (int i = 0; i < tileCount; i++) {
       if (SPIFFS.exists(dlTiles[i].path)) SPIFFS.remove(dlTiles[i].path);
     }
     ensureCanvas();
     return false;
   }
-  memset(radarGrid, 0, TFT_W * TFT_H);
 
-  curDecodingGrid = radarGrid;
   curDecodingCenterX = center_world_x;
   curDecodingCenterY = center_world_y;
   curDecodingScale = tile_scale;
@@ -1979,8 +1992,6 @@ bool downloadLatestRadar() {
     }
   }
 
-  curDecodingGrid = nullptr;
-
   // Process Alerts and Cache
   minPrecipDistSqPx = 999999.0f;
   alertIncomingPixelCount = 0;
@@ -1994,13 +2005,17 @@ bool downloadLatestRadar() {
   alertAnyTargetDy = 0.0f;
 
   for (int sy = 0; sy < TFT_H; sy++) {
+    int chunkIdx = sy / 60;
+    int rowInChunk = sy % 60;
+    uint8_t* rowSrc = curGridChunks[chunkIdx] + rowInChunk * TFT_W;
+
     float dY_px = (float)sy - 120.0f;
     for (int sx = 0; sx < TFT_W; sx++) {
       float dX_px = (float)sx - 120.0f;
       float dSq = dX_px * dX_px + dY_px * dY_px;
       if (dSq > 14400.0f) continue;
 
-      uint8_t col8 = radarGrid[sy * TFT_W + sx];
+      uint8_t col8 = rowSrc[sx];
       if (col8 != 0x00) {
         if (dSq < minPrecipDistSqPx) minPrecipDistSqPx = dSq;
         if (rainAlertThresholdKm > 0.0f) {
@@ -2036,7 +2051,9 @@ bool downloadLatestRadar() {
   if (SPIFFS.exists(RADAR_RAW_CACHE_FILE)) SPIFFS.remove(RADAR_RAW_CACHE_FILE);
   File fRawOut = SPIFFS.open(RADAR_RAW_CACHE_FILE, "w");
   if (fRawOut) {
-    fRawOut.write(radarGrid, TFT_W * TFT_H);
+    for (int i = 0; i < 4; i++) {
+      fRawOut.write(curGridChunks[i], 60 * TFT_W);
+    }
     fRawOut.flush();
     fRawOut.close();
     radarRawCacheValid = true;
@@ -2045,7 +2062,13 @@ bool downloadLatestRadar() {
     prefs.putString("last_path", radarPath);
     prefs.end();
   }
-  free(radarGrid);
+
+  for (int i = 0; i < 4; i++) {
+    if (curGridChunks[i]) {
+      free(curGridChunks[i]);
+      curGridChunks[i] = nullptr;
+    }
+  }
 
   int totalFoundPixels = alertAnyPixelCount + alertIncomingPixelCount;
   Serial.printf("[RADAR] Decoded precipitation pixels in range: %d (Any: %d, Incoming: %d, radius: %.0f km, tiles: %d)\n", 
